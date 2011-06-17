@@ -1,0 +1,40 @@
+CONTENTS OF THIS DIRECTORY
+  templates/          - templates for new scripts/config files with the API module
+
+SCRIPTS
+These should all have -h/--help options (totally overengineered in this regard) and (might) do what they sound like.
+
+  COMMON SATELLITE TASKS:
+*   clone-channel.py
+*   create-channel.py
+*   delete-channel.py
+*   delete-kickstart.py
+*   list-channels.py
+*   list-keys.py
+*   rhnsession.py
+*   upload-config-file.py
+*   upload-snippet.py
+
+  JSON DUMP/RESTORE
+*   json2kickstart.py      - dumps kickstart profiles to JSON format
+*   kickstart2json.py      - imports a JSON dump to a satellite.
+*                            Allows you to choose which kickstarts to import from the JSON file.
+* 
+*   ksoutput.txt           - pretty-printed output example.
+* 
+*   configchannel2json.py  - dumps a config channel (or a list of them) to JSON format
+*   json2configchannel.py  - unfinished restore script. I'll get there.
+
+CONFIG FILE
+  I'd create a ~/.rhninfo file if I were you (you'll be prompted for user info anyway, but it simplifies things)
+  password/login as None essentially means 'prompt'
+  see templates/rhninfo.template, but it looks like this:
+
+[DEFAULT]
+login=None
+password=None
+
+[your.sat.server]
+login=xxxxxx
+password=None
+

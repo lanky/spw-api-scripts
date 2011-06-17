@@ -1,0 +1,7 @@
+[DEFAULT]
+login = None
+password = None
+
+[satellite.hostname]
+login = yourlogin
+password = yourpassword
