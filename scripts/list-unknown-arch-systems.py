@@ -17,7 +17,7 @@ import rhnapi
 from rhnapi import system
 
 # progressbar
-from utils.progressbar import ProgressBar
+from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
 
 
 # configuration variables. Probably okay, actually.
@@ -86,24 +86,17 @@ if __name__ == '__main__':
 
         systemlist = system.listSystems(RHN)
         failed_systems = []
-        
-        pbar = ProgressBar(0, len(systemlist) + 1, 77, mode='fixed', char='#')
-        oldbar = str(pbar)
-        
+        widgets = ['progress: ', Counter(), ' Systems [', Percentage(), ']', Bar(), '(', Timer(), ')']
         print "Checking all systems for packages with arch 'Unknown'"
-        counter = 1
+        pbar = ProgressBar(widgets=widgets, maxval=len(systemlist), term_width=80).start()
         for box in systemlist:
-            count = systemlist.index(box)
+            count = systemlist.index(box) + 1
             for pkg in system.listPackages(RHN,box['id']):
                 if pkg['arch'] == 'Unknown':
                     box['base_channel'] = system.getBaseChannel(RHN, box['id'])
                     failed_systems.append(box)
                     break
-            pbar.update_amount(count)
-            if oldbar != str(pbar):
-                print pbar, '\r',
-                sys.stdout.flush()
-                oldbar = str(pbar)
+            pbar.update(count)
         print 
 
         if len(failed_systems) > 0:
