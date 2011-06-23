@@ -110,17 +110,22 @@ def clone_activationkey(rhn, keyobj, description , newkey = '', verbose = False)
              )
 
     if isinstance(newkey, str):
-        if verbose:
-            print "Cloned Key %s as %s" %(keyobj['key'], newkey)
+        print "Cloned Key %s as %s" %(keyobj['key'], newkey)
         # set child channels
-        if len(keyobj.get('child_channel_labels', [])) > 0:
-            if activationkey.addChildChannels(RHN, newkey, keyobj.get('child_channel_labels')):
-                print "Added Child Channels %(child_channel_labels)r" % keyobj
+        childchans = keyobj.get('child_channel_labels', [])
+        if len(childchans) > 0:
+            if activationkey.addChildChannels(RHN, newkey, childchans):
+                print "Added Child Channels"
+                for chan in childchans:
+                    print "  - %s" % chan
 
         # set configuration channels
-        if len(keyobj.get('config_channels',[])) > 0:
-            if activationkey.setConfigChannels(RHN, [newkey], keyobj.get('config_channels')):
-                print "Added Configuration Channels %(config_channels)r" % keyobj
+        confchans = keyobj.get('config_channels',[])
+        if len(confchans) > 0:
+            if activationkey.setConfigChannels(RHN, [newkey], confchans):
+                print "Added Configuration Channels"
+                for chan in confchans:
+                    print "  - %s" % chan
 
         # set packages
         if len (keyobj.get('packages',[])) > 0:
@@ -129,9 +134,12 @@ def clone_activationkey(rhn, keyobj, description , newkey = '', verbose = False)
                 if activationkey.addPackages(RHN, newkey, [ pkg ]):
                     print "  - %s %s" %(pkg.get('name'), pkg.get('arch', '') )
 
-        if len(keyobj.get('server_group_ids', [])) > 0:
-            if activationkey.addServerGroups(RHN, newkey, keyobj.get('server_group_ids')):
-                print "Added Server Group IDs %(server_group_ids)r" % keyobj
+        servergroups = keyobj.get('server_group_ids', [])
+        if len(servergroups) > 0:
+            if activationkey.addServerGroups(RHN, newkey, servergroups):
+                print "Added Server Groups"
+                for grp in servergrps:
+                    print "  - %d" % grp
 
         if keyobj.get('config_deploy', False):
             activationkey.enableConfigDeployment(RHN, newkey)
