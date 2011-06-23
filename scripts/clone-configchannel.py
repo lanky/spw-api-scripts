@@ -84,7 +84,7 @@ def parse_cmdline(argv):
 
     opts, args = parser.parse_args(argv)
     # so sanity-chacking stuff here
-    if len(args) != 2:
+    if len(args) != 2 and not opts.list: 
         print "we require both source and destination channel labels"
         parser.print_help()
         sys.exit(1)
@@ -174,7 +174,6 @@ if __name__ == '__main__':
     
     # process command-line arguments
     opts, args = parse_cmdline(sys.argv[1:])
-    sourcechannel, destchannel = args
     
     # declare this as global as we'll be modifying it in a number of places as we
     # import config channels
@@ -194,6 +193,8 @@ if __name__ == '__main__':
             print '\n'.join(existing_labels)
             sys.exit(0)
 
+        else:
+            sourcechannel, destchannel = args
 # --------------------------------------------------------------------------------- #
 
         if sourcechannel not in existing_labels:
