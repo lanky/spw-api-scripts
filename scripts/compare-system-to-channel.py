@@ -27,7 +27,7 @@ from rhnapi import channel
 from rhnapi import packages
 from rhnapi import utils
 
-from utils.progressbar import ProgressBar
+from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
 
 
 # configuration variables. Probably okay, actually.
@@ -74,13 +74,18 @@ plus any errata that provide those packages (if there are any)."""
     parser.add_option_group(sysgrp)
 
     # this is quite a long-running script, so offer to show a progressbar if needed.
-    parser.add_option("-P", "--progress", action = "store_true", default = False,
-            help = "show progress bars for long-running processes. Conflicts with -d/--debug.")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+            help = "hide output (progressbars etc). Conflicts with -d/--debug.")
 
     opts, args = parser.parse_args()
     # check the args for errors etc...
     if not opts.channel and not opts.profile:
         print "you must provide either a system profile name or a channel label."
+        parser.print_help()
+        sys.exit(1)
+
+    if opts.quiet and opts.debug:
+        print "you have specified both --quiet and --debug. You can't have it both ways!"
         parser.print_help()
         sys.exit(1)
 
@@ -95,11 +100,11 @@ def get_pkgids(rhn, packagelist, progressbar = True):
     This shows a progressbar by default
     """
     if progressbar:
-        pbar = ProgressBar(0, len(packagelist) - 1, 77, mode='fixed', char='#')
-        oldbar = str(pbar)
+        widgets = ['Getting Package Details: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
+        pbar = ProgressBar(widgets=widgets, maxval=len(packagelist), term_width=80).start()
     for pkg in packagelist:
         if progressbar:
-            count = packagelist.index(pkg)
+            count = packagelist.index(pkg) + 1
         # handle AMD64 as an arch label (why does satellite not handle this automatically?)
         if pkg['arch'].strip() == 'AMD64':
             arch = 'x86_64'
@@ -117,13 +122,8 @@ def get_pkgids(rhn, packagelist, progressbar = True):
                 else:
                     pkg[k] = v
         if progressbar:
-            pbar.update_amount(count)
-            if oldbar != str(pbar):
-                print pbar, '\r',
-                sys.stdout.flush()
-                oldbar = str(pbar)
-
-    print
+            pbar.update(count)
+    # print
     return packagelist
 
 # --------------------------------------------------------------------------------- #
@@ -181,8 +181,8 @@ def index_by_arch(pkglist, progressbar = False, verbose = False):
     """
     pkgindex = {}
     if progressbar:
-        pbar = ProgressBar(0, len(pkglist) - 1, 77, mode='fixed', char='#')
-        oldbar = str(pbar)
+        widgets = ['Indexing packages by architecture: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
+        pbar = ProgressBar(widgets=widgets, maxval=len(pkglist), term_width=80).start()
     if verbose:
         print "indexing package list (%d items) by name and architecture" % len(pkglist)
     for pkg in pkglist:
@@ -198,13 +198,7 @@ def index_by_arch(pkglist, progressbar = False, verbose = False):
 
         pkgindex[pkg['name']][pkg['arch_label']].append(pkg)
         if progressbar:
-            pbar.update_amount(pkglist.index(pkg))
-            if oldbar != str(pbar):
-                print pbar, '\r',
-                sys.stdout.flush()
-                oldbar = str(pbar)
-    if progressbar:
-        print
+            pbar.update(pkglist.index(pkg) +1)
     if verbose:
         print "indexed %d packages" % len(pkgindex)
     return pkgindex
@@ -221,12 +215,12 @@ def reduce_by_arch(pkglist, progressbar = False, verbose = False):
     pkgindex = index_by_arch(pkglist, progressbar = progressbar, verbose = verbose)
 
     reduced_list = []
-    if progressbar:
-        pbar = ProgressBar(0, len(pkgindex) - 1, 77, mode='fixed', char='#')
-        oldbar = str(pbar)
-        counter = 0
     if verbose:
         print "reducing package list (%d items) to latest versions only (for each architecture)" % len(pkglist)
+    if progressbar:
+        widgets = ['Reducing package list to latest versions: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
+        pbar = ProgressBar(widgets=widgets, maxval=len(pkgindex), term_width=80).start()
+        counter = 0
     for pkgname, archdict in pkgindex.iteritems():
         for arch, pkgobjs in archdict.iteritems():
             if len(pkgobjs) == 0:
@@ -244,15 +238,10 @@ def reduce_by_arch(pkglist, progressbar = False, verbose = False):
                 reduced_list.append(newest)
         if progressbar:
             counter += 1
-            pbar.update_amount(counter)
-            if oldbar != str(pbar):
-                print pbar, '\r',
-                sys.stdout.flush()
-                oldbar = str(pbar)
-    if progressbar:
-        print
+            pbar.update(counter)
     if verbose:
         print "reduced packagelist to %d entries" % len(reduced_list)
+    print
     return reduced_list
 
 def process_system(rhn, systemobj, channelpackagelist, progressbar = False, packagedict = {}, verbose = False):
@@ -266,8 +255,12 @@ def process_system(rhn, systemobj, channelpackagelist, progressbar = False, pack
     installed_pkgs = system.listPackages(RHN, systemobj['id'])
     if check_unknown(installed_pkgs):
         sys_pkgs = get_pkgids(RHN, installed_pkgs, progressbar = progressbar)
-        chandiffs = diff_package_lists(sys_pkgs, chan_pkgs)
-        for pkg in sorted(chandiffs, key=itemgetter('name')):
+        chandiffs = sorted(diff_package_lists(sys_pkgs, chan_pkgs), key=itemgetter('name'))
+        if progressbar:
+            widgets = ['Finding Errata for packages: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
+            pbar = ProgressBar(widgets=widgets, maxval=len(chandiffs), term_width=80).start()
+        for pkg in chandiffs:
+            counter = 1 + chandiffs.index(pkg)
             pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s" % pkg
             errlist = packages.listProvidingErrata(RHN, pkg['id'])
             if len(errlist) > 0:
@@ -284,6 +277,8 @@ def process_system(rhn, systemobj, channelpackagelist, progressbar = False, pack
                         results['noerrata'].append(pkgstr)
                 else:
                     results['noerrata'] = [ pkgstr ]
+            if progressbar:
+                pbar.update(counter)
     else:
         print "system %s has an outdated version of up2date, please update it" % systemobj['name']
         return None
@@ -296,12 +291,20 @@ if __name__ == '__main__':
     
     # parse the command line
     opts, args = parse_cmdline(sys.argv)
+    if opts.quiet:
+        verbose = False
+        showprogress = False
+        debug = False
+    else:
+        showprogress = True
+        verbose = opts.verbose
+        debug = opts.debug
 
     # initialise an RHN Session (the try...except block allows us to interrupt with Ctrl-C)
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
         # did we require debugging? lots of unpleasant output on failure if we did...
-        if opts.debug:
+        if debug:
             RHN.enableDebug()
 
         if opts.profile:
@@ -318,7 +321,7 @@ if __name__ == '__main__':
             # if we didn't choose a channel to diff against, use the system's base channel:
             if not opts.channel:           
                 basechannel = system.getBaseChannel(RHN, systemobj['id'])
-                if opts.verbose:
+                if verbose:
                     print "using software channel '%s' (registered base channel for %s)" %( basechannel, opts.profile)
 
         if opts.channel:
@@ -333,29 +336,29 @@ if __name__ == '__main__':
         # was used for progress reports...
         syscount = len(system_list)
 
-        if opts.verbose:
+        if not opts.quiet:
             print "Getting a list of packages in channel %s" % basechannel
         chan_pkgs = channel.listAllPackages(RHN, basechannel)
-        if opts.verbose:
+        if not opts.quiet:
             print "reducing package list to latest available versions only"
-        reduced_pkgs = reduce_by_arch(chan_pkgs, opts.progress, opts.verbose)
+        reduced_pkgs = reduce_by_arch(chan_pkgs, showprogress, verbose)
 
         # now process each system
         counter = 1
         global systemdiff
         systemdiff = {}
         for sysrecord in system_list:
-            if opts.verbose:
+            if not opts.quiet:
                 print "finding newer packages and associated errata for %s [%d of %d]" % (sysrecord['name'], counter, syscount)
-            process_system(RHN, sysrecord, reduced_pkgs, progressbar = opts.progress, packagedict = systemdiff)
+            process_system(RHN, sysrecord, reduced_pkgs, progressbar = showprogress, packagedict = systemdiff)
             print "package diff now has %d entries" %  len(systemdiff)
             counter += 1
 
-        if opts.verbose:
+        if verbose:
             pprint(systemdiff)
 
         if opts.output:
-            if opts.verbose:
+            if verbose:
                 print "dumping JSON records to output file %s" % opts.output
             if os.path.exists(opts.output):
                 res = prompt_confirm('overwrite existing file %s' % opts.output)
@@ -369,8 +372,3 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print "operation cancelled"
         sys.exit(1)
-
-
-    
-    
-    
