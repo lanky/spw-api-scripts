@@ -25,6 +25,9 @@ from rhnapi import packages
 from rhnapi import channel
 from rhnapi import utils
 
+# from progressbar, for user feedback
+from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
+
 # configuration variables. Probably okay, actually.
 RHNCONFIG = '~/.rhninfo'
 RHNHOST = 'localhost'
@@ -42,7 +45,7 @@ def parse_cmdline(argv):
  The rpm queryformat should contain NAME|VERSION|RELEASE|ARCH|EPOCH information.
  Separator can be any reasonable char but defaults to the pipe character. """
     usagestr = "%prog [RHNOPTS] [-f OUTPUTFILE ] [ -S SEPARATOR ] -c CHANNEL_LABEL INPUTFILE"
-    parser = OptionParser()
+    parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
             help = "enable debug output for RHN session (XMLRPC errors etc")
     parser.add_option("-v", "--verbose", action = "store_true", default = False,
@@ -63,7 +66,7 @@ def parse_cmdline(argv):
     changrp.add_option("-c", "--channel", help = "Channel LABEL to diff against.")
     changrp.add_option("-f", "--file", help = "output file for diffs")
     changrp.add_option("-S", "--separator", default = "|",
-        help = "separator used in rpm -qa queryformat. default is "%default"")
+        help = "separator used in rpm -qa queryformat. default is '%default'")
     parser.add_option_group(changrp)
 
     # parse the arguments we were given (commandline, probably)
@@ -81,6 +84,8 @@ def parse_cmdline(argv):
     # only expecting one arg, so let's just return that instead of a list            
     return opts, args[0]
 
+
+
 # --------------------------------------------------------------------------------- #
 
 def main():
@@ -94,6 +99,9 @@ def main():
         if opts.debug:
             RHN.enableDebug()
         filepkgs = []
+        widgets = ['Packages: ', Counter(), ' Errata [', Percentage(), ']', Bar(), '(', Timer(), ')']
+        pbar = ProgressBar(widgets = widgets, term_width = 80, maxval = len(open(inputfile).readlines())).start()
+        counter = 0
         for line in open(inputfile):
             try:
                 # lines should be name|ver|rel|arch|epoch, where epoch is mostly '(none)'
@@ -102,12 +110,16 @@ def main():
                     pkgepoch = ''
             except:
                 # ignore lines not matching the pattern
+                counter +=1
+                pbar.update(counter)
                 continue
 
             pkgdetails = packages.findByNvrea(RHN, pkgname, pkgver, pkgrel , pkgarch, pkgepoch)
-
+        
             if pkgdetails:
                 filepkgs.append(pkgdetails)
+            counter += 1
+            pbar.update(counter)
 
         print "dumping to %s " % outputfile
         utils.dumpJSON(filepkgs, outputfile)
