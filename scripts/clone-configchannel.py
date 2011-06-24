@@ -70,8 +70,6 @@ def parse_cmdline(argv):
 
     # script-specific options
     ccgrp = OptionGroup(parser, "Configuration Channel Options")
-    ccgrp.add_option("-c","--channel",
-        help="Channel to create/import from JSON file. Default is ALL channels")
     ccgrp.add_option("--list", action="store_true", default=False,
         help="just list config channel labels in the JSON file and exit")
     ccgrp.add_option("-u","--update", action="store_true", default = False,
@@ -190,6 +188,7 @@ if __name__ == '__main__':
         # if we asked for a list, just do that and exit
         if opts.list:
             print "Existing Configuration Channels:"
+            print "================================"
             print '\n'.join(existing_labels)
             sys.exit(0)
 
