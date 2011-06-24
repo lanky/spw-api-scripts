@@ -299,21 +299,13 @@ if __name__ == '__main__':
                 buglist = []
                 # collate our unsynced errata
                 enames = get_missing_errata(RHN, chan, source, etype)
+                # wrap it in a progressbar
                 widgets = [etype, ': ', Counter(), ' Errata [', Percentage(), ']', Bar(), '(', Timer(), ')']
                 pbar = ProgressBar(widgets=widgets, maxval=len(enames), term_width=80).start()
-                # wrap it in a progressbar
-                #pbar  = ProgressBar(0, len(enames), 65, mode = "fixed", char = "#")
-                #oldbar = str(pbar)
-                #total = len(enames)
                 for name in enames:
                     progress = enames.index(name) + 1
                     entry = process_erratum(RHN, name, etype)
                     pbar.update(progress)
-                    #pstr = "%s %s (%d/%d)" %(etype.ljust(11), str(pbar), progress, total)
-                    #if oldbar != str(pbar):
-                    #    print pstr, '\r',
-                    #    sys.stdout.flush()
-                    #    oldbar = str(pbar)
 
                     if opts.relevant:
                         if len(entry['systems']) > 0:
