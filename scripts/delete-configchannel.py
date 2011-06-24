@@ -33,7 +33,7 @@ def parse_cmdline(argv):
     give this sys.argv[1:] as an argument to avoid any issues with the script name
     being considered an 'argument' and processed
     """
-    preamble = "Delete the specified configuration channel(s) from your satellite. Use with care. You might want to back them up first. See 'configchannel2json.py' for one way to do this."
+    preamble = "Delete the specified configuration channel(s) from your satellite. Use with care. You might want to back them up first. See 'export-configchannels.py' for one way to do this."
     usagestr = "%prog [OPTIONS] CHANNEL_LABEL..."
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
@@ -52,11 +52,16 @@ def parse_cmdline(argv):
         help = "save usernames and password in config file, if missing")
     parser.add_option_group(rhngrp)
 
+    confgrp = OptionGroup(parser, "Configuration Channel Options")
+    confgrp.add_option("-l", "--list", action = "store_true", default = False,
+        help = "Just list existing configuration channel labels and exit")
+    parser.add_option_group(confgrp)
+
     # script-specific options
     opts, args = parser.parse_args(argv)
 
     # do sanity-chacking stuff here
-    if len(args) < 1:
+    if len(args) < 1 and not opts.list:
         print "You must provide at least one configuration channel label"
         parser.print_help()
         sys.exit(1)
@@ -75,9 +80,20 @@ if __name__ == '__main__':
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
         if opts.debug:
             RHN.enableDebug()
+        existing_labels = [ x['label'] for x in configchannel.listGlobals(RHN) ]
+        if opts.list:
+            print "Existing Configuration Channels"
+            print "==============================="
+            print '\n'.join(existing_labels)
+            sys.exit(0)
+
+            
         for chan in args:
+            if not chan in existing_labels:
+                print "Configuration Channel %s does not exist. Skipping it." % chan
+                continue
             if configchannel.deleteConfigChannel(RHN, args[0]):
-                print "Configuration channel %s deleted" % chan
+                print "Configuration channel '%s' successfully deleted" % chan
             else:
                 print "failed to delete channel %s" % chan
             
