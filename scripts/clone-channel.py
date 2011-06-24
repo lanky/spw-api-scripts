@@ -146,7 +146,7 @@ if __name__ == '__main__':
             kwargs['parent_label'] = opts.parent
         if opts.verbose:
             print "cloning channel"
-        if channel.cloneChannel(RHN, opts.source, False, **kwargs):
+        if channel.cloneChannel(RHN, opts.source, opts.no_errata, **kwargs):
             print "Successfully cloned %s as %s" %(opts.source, opts.dest)
     except KeyboardInterrupt:
         print "operation cancelled"
