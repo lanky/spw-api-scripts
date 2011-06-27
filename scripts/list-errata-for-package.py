@@ -24,7 +24,7 @@ from operator import itemgetter
 
 
 import rhnapi
-from rhnapi import packages
+from rhnapi import packages, errata
 
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
@@ -121,9 +121,18 @@ def query_from_filename(fname):
             strparts.append("%s:%s" % (str(k), v))
     # finally, join it all together
     return ' AND '.join(strparts)
-        
+
 # --------------------------------------------------------------------------------- #
 
+def reduce_list(seq): 
+    """
+    non-order preserving uniquifying function for lists and other sequences
+    """
+    # a set is an unordered collection of unique entries
+    s = set(seq)
+    return list(s)
+        
+# --------------------------------------------------------------------------------- #
 if __name__ == '__main__':
     
     opts, args = parse_cmdline(sys.argv[1:])
@@ -154,33 +163,82 @@ if __name__ == '__main__':
             querystr = ' AND '.join(queryitems)
 
         if opts.verbose:
-            print "Querying with search string: %s" 
+            print "Querying with search string: %s" % querystr
 
         # perform a lucene query using our query string:
-        matched_packages = packages.search(RHN, querystr)
+        
+        # list of matching packages
+        # we only really need the IDs though
+        pkgs = packages.search(RHN, querystr) 
+
+        if pkgs is False:
+            print "search with parameters %s failed" % querystr
+            sys.exit(2)
         
         # if the search worked, but returned nothing...
-        if matched_packages and len(matched_packages) == 0:
+        if pkgs and len(pkgs) == 0:
             print "No packages seem to match the provided search parameters (%s)" % querystr
         else:
-            print "Packages matching your query"
-            for pkg in sorted(matched_packages, key=itemgetter('version')):
-                pkgstr = "%(id)-10d   %(name)s-%(version)s-%(release)s.%(arch)s" % pkg
-                print "Package ID   Package Name"
-                print "----------   ------------"
-                print pkgstr
-                providing_errata = packages.listProvidingErrata(RHN, pkg['id'])
-                if len(providing_errata) == 1:
-                    term = 'Erratum'
-                else:
-                    term = 'Errata'
+            errlist = []
+            # for convenience:
+            pids = [ p.get('id') for p in pkgs ]
+
+            for p in pids:
+                for err in packages.listProvidingErrata(RHN, p):
+                    errlist.append(err.get('advisory'))
+
+            # reduce the list to unique entries only:        
+            errlist = reduce_list(errlist)                    
+
+            # now we reduce the list of errata further, by stripping out
+            # RH advisories that have already been cloned.
+            # this assumes that cloned errata have the same ID as their source
+            # erratum, e.g. RHXX-2010:NNNN -> CLA-2010:NNNN
+
+            # get a list of unique cloned errata advisories:
+            clones = reduce_list([ x for x in errlist if x.startswith('CLA') ])
+
+            # do the same for the RH** advisories:
+            rhids  = reduce_list([ x for x in errlist if x.startswith('RH') ])
+
+            # now run through the clones and compare them to the RH ids, removing
+            # all the RH errata that match something in the clone list:
+            for c in clones:
+                # split the clone ids:
+                ct, cn = c.split('-')
+                for r in rhids:
+                # split the rhids to compare advisory ID numbers
+                    rtype, rname = r.split('-')
+                    if cn == rname:
+                        rhids.remove(r)
+            
+            # now recombine them (this would work in either order)
+            clones.extend(rhids)
+            # sort them by the advisory date so we get them in ascending order
+            clones.sort(key = lambda k: k.split('-')[1])
+
+            if opts.verbose:
+                print "reduced errata list from %d to %d entries" %(len(errlist), len(clones))
+                print "Gathering information for output"
+
+            print "Errata providing matching packages"
+            print "Search Term: '%s'" % querystr
+            print "============================================================="
+            for adv in clones:
+                # extract the synopsis
+                descr = errata.getDetails(RHN, adv).get('synopsis')
+                # get the RPM filenames from the 'path' entry
+                payload = [ x['path'].split('/').pop() for x in errata.listPackages(RHN, adv)]
+
+                print "Advisory: %s" % adv
+                print "Synopsis: %s" % descr
+                print "RPM Packages:"
+                for p in payload:
+                    print "  %s" % p
                 print
-                print "%s providing this package (for cloning purposes)" % term
-                print "Advisory Name    Description"
-                print "-------------    -----------"
-                for errobj in providing_errata:
-                    print "%(advisory)-15s  %(synopsis)s" % errobj
-                print "----------------------------\n"
+                print "---------------\n"
+
+
 
     except KeyboardInterrupt:
         print "operation cancelled"
