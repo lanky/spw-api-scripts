@@ -105,7 +105,7 @@ if __name__ == '__main__':
                 print "channel label %s does not exist. Skipping it." % chan
                 continue
 
-            if channel.hasChildren(chan):
+            if channel.hasChildren(RHN, chan):
                 child_chans = channel.listChildChannels(RHN, chan)
                 if opts.recursive:
                     for child in child_chans:
