@@ -30,7 +30,7 @@ def parse_cmdline(argv):
     process the commandline :)
     """
     preamble = "Delete a channel in your RHN Satellite. "
-    usagestr = "%prog [RHNOPTS...] [-ri] -c CHANNEL"
+    usagestr = "%prog [RHNOPTS...] [-r|--list] CHANNEL..."
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
@@ -50,13 +50,22 @@ def parse_cmdline(argv):
 
     # script-specific options
     changrp = OptionGroup(parser, "Channel Options")
-    changrp.add_option('-c','--channel', dest = 'channel', help = 'channel LABEL you wish to delete', default=None)
-    changrp.add_option('-r', '--recursive', help = 'delete channel recursively, removing all children (dangerous)', action = 'store_true', default=False)
-    changrp.add_option('-i', '--interactive', action = 'store_true', default = False,
-            help = "interactive mode - prompt before deleting")
+    changrp.add_option("-r", "--recursive", help = "delete channel(s) recursively, removing all children (dangerous)", action = "store_true", default=False)
+    changrp.add_option("--list", action = "store_true", default = False,
+            help = "just list custom channels (you can't delete any others) and exit")
     parser.add_option_group(changrp)
 
     opts, args = parser.parse_args()
+    if len(args) == 0 and not opts.list:
+        print "ERROR"
+        print "You must provide at least one channel LABEL to delete"
+        parser.print_help()
+        sys.exit(1)
+    if len(args) > 1 and opts.recursive:
+        print "ERROR"
+        print "For safety, --recursive only works on one base channel at a time"
+        parser.print_help()
+        sys.exit(1)
     # check the args for errors etc...
 
     # finally...
@@ -64,38 +73,41 @@ def parse_cmdline(argv):
 
 # --------------------------------------------------------------------------------- #
 
+
 if __name__ == '__main__':
     
-    opts, args = parse_cmdline(sys.argv)
-    # initialiase an RHN Session
-#    print "This is under heavy development and is currenttly non-functional"
-#    sys.exit(0)
+    opts, chanlist = parse_cmdline(sys.argv)
     try:
+        # login to our satellite
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        # did we give the --debug switch?
         if opts.debug:
             RHN.enableDebug()
 
+        if opts.list:
+            print "Custom Software Channels"
+            print "========================"
+            mychans = [ x['label'] for x in channel.listMyChannels(RHN) ]
+            for chan in mychans:
+                if channel.hasChildren(RHN, chan):
+                    print chan
+                    for child in channel.listChildren(RHN, chan):
+                        print '  %(label)s'  % child
+            sys.exit(0)
+
+
+        # get a list of existing channels
         existing_channels = [ x['label'] for x in channel.listSoftwareChannels(RHN) ]
 
-        for chan in opts.channel.split(','):
+        for chan in chanlist:
             if chan not in existing_channels:
-                print "source channel %s does not exist. Skipping it." % chan
-                if opts.interactive:
-                    print "The following channels exist on your satellite:"
-                    print '\n'.join(existing_channels)
-                    chan = utils.prompt_missing('Channel label: ')
+                print "channel label %s does not exist. Skipping it." % chan
                 continue
 
-            child_chans = channel.listChildChannels(RHN, chan)
-            has_children = len(child_chans) > 0
-
-            # does this have child channels?
-            if has_children:
+            if channel.hasChildren(chan):
+                child_chans = channel.listChildChannels(RHN, chan)
                 if opts.recursive:
                     for child in child_chans:
-                        if opts.interactive:
-                            if not utils.prompt_confirm("Delete channel %s" % child, "Y"):
-                                continue
                         if opts.verbose:
                             print "deleting child channel %s" % child
                         if channel.delete(RHN, child):
