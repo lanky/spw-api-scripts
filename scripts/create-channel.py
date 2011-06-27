@@ -61,6 +61,9 @@ def parse_cmdline(argv):
     if opts.channel is None:
         print "you must provide a label for your new channel"
         sys.exit(1)
+    # handle the purely weird channel architecture labels.
+    if not opts.arch.startswith('channel-'):
+        opts.arch = "channel-%s" % opts.arch
     
     if opts.name is None:
         opts.name = opts.channel.strip()
