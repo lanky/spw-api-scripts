@@ -89,8 +89,8 @@ if __name__ == '__main__':
             print "========================"
             mychans = [ x['label'] for x in channel.listMyChannels(RHN) ]
             for chan in mychans:
+                print chan
                 if channel.hasChildren(RHN, chan):
-                    print chan
                     for child in channel.listChildren(RHN, chan):
                         print '  %(label)s'  % child
             sys.exit(0)
