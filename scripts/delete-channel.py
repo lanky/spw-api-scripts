@@ -29,7 +29,7 @@ def parse_cmdline(argv):
     """
     process the commandline :)
     """
-    preamble = "Delete a channel in your RHN Satellite. "
+    preamble = "Delete a channel (or list of channels) from your RHN Satellite. "
     usagestr = "%prog [RHNOPTS...] [-r|--list] CHANNEL..."
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
