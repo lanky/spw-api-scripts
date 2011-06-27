@@ -93,6 +93,7 @@ if __name__ == '__main__':
                 if channel.hasChildren(RHN, chan):
                     for child in channel.listChildren(RHN, chan):
                         print '  %(label)s'  % child
+                        mychans.remove(child['label'])
             sys.exit(0)
 
 
