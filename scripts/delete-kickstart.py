@@ -28,7 +28,7 @@ def parse_cmdline(argv):
     being considered an 'argument' and processed
     """
     preamble = "Delete the provided kickstart profile from your satellite. Use with care."
-    usagestr = "%prog [OPTIONS] KICKSTART_LABEL"
+    usagestr = "%prog [OPTIONS] KICKSTART_LABELS"
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
@@ -42,13 +42,24 @@ def parse_cmdline(argv):
     rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
     rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help="Cache provided credentials in config file" )
     parser.add_option_group(rhngrp)
+
+    ksgrp = OptionGroup(parser, "kickstart options")
+    ksgrp.add_option("--list", action = "store_true", default = False,
+        help = "simply list existing kickstart profiles and exit")
+    parser.add_option_group(ksgrp)
 
     # script-specific options
     opts, args = parser.parse_args(argv)
 
     # so sanity-chacking stuff here
+    if len(args) == 0 and not opts.list:
+        print "ERROR"
+        print "You must provide a kickstart label or the --list option"
+        parser.print_help()
+        sys.exit(1)
 
     # finally return the cleaned options and args
     return opts, args
@@ -64,10 +75,25 @@ if __name__ == '__main__':
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
         if opts.debug:
             RHN.enableDebug()
-        if kickstart.deleteProfile(RHN, args[0]):
-            print "kickstart profile %s deleted" % args[0]
-        else:
-            print "failed to delete profile %s" % args[0]
+        # list of kickstart profiles
+        all_kickstarts = kickstart.listKickstarts(RHN)
+        # just their labels for 'does this exist?' and '--list' options
+        ks_labels = [ x.get('label') for x in all_kickstarts ]
+
+        if opts.list:
+            print "Existing Kickstart labels"
+            print "========================="
+            print '\n'.join(ks_labels)
+            sys.exit(0)
+
+        for kslabel in args:
+            if kslabel not in ks_labels:
+                print "no such kickstart profile: %s" % kslabel
+
+            if kickstart.deleteProfile(RHN, args[0]):
+                print "kickstart profile %s deleted" % args[0]
+            else:
+                print "failed to delete profile %s" % args[0]
             
 
         # do stuff
