@@ -78,13 +78,10 @@ def parse_cmdline(argv):
     # script-specific options
     keygrp = OptionGroup(parser, "Activation Key options", "Options for processing Activation Keys")
     keygrp.add_option("--list", action = "store_true", default = False, help = "List activation keys in file and exit [%default]")
-    keygrp.add_option("-a", "--all", action = "store_true", default = False, help = "import ALL activation keys from the file [%default]")
-    keygrp.add_option("-k", "--key", help = "Activation Key (the hyphenated 'hex string'). Can also take a comma-separated list. No spaces.")
-    keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Import reactivation keys  [%default]")
-    keygrp.add_option("-n", "--not-really", action = "store_true", default = False, help = "DRY RUN. Pretty print data to stdout [%default]")
+    keygrp.add_option("-k", "--key", help = "Activation Key (the hyphenated 'hex string'). Can also take a comma-separated list. No spaces. If not specified, an attempt will be made to import all keys from your JSON file that do not currently exist on the satellite.")
+    keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Import reactivation keys as well [%default]")
+    keygrp.add_option("-n", "--not-really", action = "store_true", default = False, help = "DRY RUN. Simply report what would happen.")
     keygrp.add_option("-i", "--interactive", action = "store_true", default = False, help = "Operate in interactive mode. Can be very tedious.")
-    # not implemented (yet)
-    # keygrp.add_option("--create-missing", action = "store_true", default = False, help = "Create missing system groups (by name)")
     parser.add_option_group(keygrp)
 
 
@@ -97,17 +94,12 @@ def parse_cmdline(argv):
         print "%s does not appear to be a file."
         parser.print_help()
         sys.exit(1)
-    
-    # if not opts.list and not opts.key and not opts.all:
-    #    print "You must provide either an activationkey (or --all) or the --list option"
-    #'    parser.print_help()
-    #    sys.exit(1)
-
-
-    # check the args for errors etc...
-
     # finally...
     return opts, args
+
+
+# --------------------------------------------------------------------------------- #
+
 def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     """
     creates an activation key from a dict structure.
@@ -262,6 +254,11 @@ if __name__ == '__main__':
             keyobjects = [ x for x in keyobjects if not react_pattern.match(x['description']) ]
         # extract keynames - we'll use this to check if the key already exists.
         keynames = [ x['key'] for x in keyobjects ]
+        if opts.key:
+            selected_keys = [ x for x in keyobjects if x['key'] in opts.key.split(',') ]
+        else:
+            # well, if we didn't choose a key, then try to import all of them
+            selected_keys = keyobjects
 
         if opts.list:
             print "Activation Keys in file %s" % jsonfile
@@ -288,11 +285,15 @@ if __name__ == '__main__':
 
         # handle debugging requests
 
-        for keyobj in keyobjects:
+        for keyobj in selected_keys:
             if (keyobj['description'], keyobj['key']) in existing_keys:
-                print "'%(description)s' (%(key)s) already exists, skipping it" % keyobj
+                print "Skipping Existing Activation Key '%(key)s'" % keyobj
                 continue
             else:
+                if opts.not_really:
+                    print "Would import key %(key)s [%(description)s]" % keyobj
+                    continue
+
                 if create_activation_key(RHN, keyobj, opts.interactive, opts.verbose):
                     print "successfully imported activationkey %(key)s" % keyobj
                 else:
