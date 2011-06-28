@@ -116,6 +116,7 @@ if __name__ == '__main__':
             channel_list = existing_labels
 
         for chan in channel_list:
+            print "processing channel '%s'" % chan
             if chan in existing_labels:
                 if opts.verbose:
                     print "looking up data for channel %s" % chan
