@@ -68,12 +68,11 @@ def parse_cmdline(argv):
 
     # script-specific options
     keygrp = OptionGroup(parser, "Activation Key options", "Options for processing Activation Keys")
-    keygrp.add_option("--list", action = "store_true", default = False, help = "List activation keys and exit [%default]")
-    keygrp.add_option("-a", "--all", action = "store_true", default = False, help = "dump data for ALL activation keys profiles [%default]")
+    keygrp.add_option("--list", action = "store_true", default = False, help = "List activation keys and exit")
+    keygrp.add_option("-a", "--all", action = "store_true", default = False, help = "dump data for ALL activation keys profiles")
     keygrp.add_option("-f", "--file", help = "filename to dump activation key information to [KICKSTARTLABEL.json or activationkeys.json]")
     keygrp.add_option("-k", "--key", help = "Activation Key (the hyphenated 'hex string'). Can also take a comma-separated list. No spaces.")
-    keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Include Reactivation keys in exported data [%default]")
-    keygrp.add_option("-n", "--not-really", action = "store_true", default = False, help = "DRY RUN. Pretty print data to stdout [%default]")
+    keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Include Reactivation keys if exporting all keys [%default]")
     parser.add_option_group(keygrp)
 
 
