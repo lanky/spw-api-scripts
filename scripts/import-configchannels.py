@@ -197,7 +197,7 @@ if __name__ == '__main__':
             channel_list = opts.channel.split(',')
         else:
             if opts.verbose:
-                print "no channel specified. dumping ALL config channels"
+                print "no channel specified. importing ALL config channels"
             channel_list = json_channels
 
         # list of the channel objects from the JSON import that we wish to
