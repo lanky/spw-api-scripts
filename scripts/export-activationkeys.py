@@ -73,6 +73,8 @@ def parse_cmdline(argv):
     keygrp.add_option("-f", "--file", help = "filename to dump activation key information to [KICKSTARTLABEL.json or activationkeys.json]")
     keygrp.add_option("-k", "--key", help = "Activation Key (the hyphenated 'hex string'). Can also take a comma-separated list. No spaces.")
     keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Include Reactivation keys if exporting all keys [%default]")
+    keygrp.add_option("-s", "--stdout", action = "store_true", default = False,
+        help = "Don't use an export file, just print the data.")
     parser.add_option_group(keygrp)
 
 
@@ -186,7 +188,7 @@ if __name__ == '__main__':
             for keyobject in all_keys:
                 print "processing Activation Key %s (%s)" % (keyobject['description'], keyobject['key'])
                 export_data.append(get_key_details(RHN, keyobject, opts.verbose))
-        if opts.not_really:
+        if opts.stdout:
             pprint(export_data)
             sys.exit(0)
         if opts.file:
