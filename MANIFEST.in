@@ -1,0 +1,3 @@
+recursive-include scripts *.py
+graft docs  
+graft scripts/templates
