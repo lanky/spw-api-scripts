@@ -162,7 +162,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                 print "config channel label %s does not exist locally, skipping it."
                 continue
         if len(configlabels) != 0:        
-            if activationkey.addConfigChannels(rhn, keyid, configlabels):
+            if activationkey.addConfigChannels(rhn, [ keyid ], configlabels):
                 print "added configuration channels to key"
 
         # process the config deployment checkbox (value = 1/0)
