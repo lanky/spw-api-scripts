@@ -16,6 +16,8 @@ import time
 from optparse import OptionParser, OptionGroup
 from pprint import pprint
 
+import logging
+
 # custom module imports
 import rhnapi
 from rhnapi import activationkey
@@ -39,10 +41,10 @@ def parse_cmdline(argv):
     usagestr = "%prog [RHNOPTS] [KEYOPTS] ACTIVATIONKEY"
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
-    parser.add_option("--debug", action = "store_true", default = False,
+    parser.add_option("-V", "--debug", action = "store_true", default = False,
             help = "enable debug output for RHN session (XMLRPC errors etc")
-    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+    parser.add_option("-v", "--verbose", action = "store_true", default = False,
+            help = "enable extra informational output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -78,8 +80,8 @@ def parse_cmdline(argv):
 
     # finally...
     return opts, args
-    
-        
+
+
 # --------------------------------------------------------------------------------- #
 
 def clone_activationkey(rhn, keyobj, description , newkey = '', verbose = False):
@@ -148,7 +150,17 @@ def clone_activationkey(rhn, keyobj, description , newkey = '', verbose = False)
 
 if __name__ == '__main__':
     
+    # Parse command line args and set loglevel
     opts, args = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+        opts.verbose=True
+        logging.debug("Debug level logging enabled")
+    elif opts.verbose:
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
+    else:
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.WARNING)
+
     try:
         # initialise an RHN Session
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
@@ -169,9 +181,13 @@ if __name__ == '__main__':
         # basic details
         srcobj = activationkey.getDetails(RHN,srckey)
         # configuration channels in rank order
-        srcobj['config_channels'] = [ x['label'] for x in activationkey.listConfigChannels(RHN, srckey) ]
-        # config deployment
-        srcobj['config_deploy'] = activationkey.checkConfigDeployment == 1
+        logging.debug("Got source object for key %s, entitlements=%s" % (srcobj['key'], srcobj['entitlements']))
+        if 'provisioning_entitled' in srcobj['entitlements']:
+            logging.info("key %s is provisioning entitled, getting config channels")
+            srcobj['config_channels'] = [ x['label'] for x in activationkey.listConfigChannels(RHN, srckey) ]
+            logging.debug("%s, number of config channels=%d" % (srcobj['key'], len(srcobj['config_channels'])))
+            # config deployment
+            srcobj['config_deploy'] = activationkey.checkConfigDeployment == 1
 
         # now let's create a new key, according to our options:
         # parameters required (from rhnapi.activationkey.create():
