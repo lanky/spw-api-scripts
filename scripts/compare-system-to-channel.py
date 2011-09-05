@@ -1,13 +1,12 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # template API script using the rhnapi python module
 # the module will need to be on your PYTHONPATH
 # or its parent directory added using sys.path.append
 """
 compare-system-to-channel.py
 A script to diff the package list from a server and the packages in
-its subscribed base channel to see what is missing (or has been updated
-out-of-band)
+its subscribed base channel, and optionally any subscribed child channels
+to see what is missing, out of date, or has been updated out-of-band
 Can also diff with another selected channel if required.
 
 requires the rhnapi python module.
@@ -19,6 +18,7 @@ from optparse import OptionParser, OptionGroup
 from operator import itemgetter
 from pprint import pprint
 import rpm
+import logging
 
 # custom module imports
 import rhnapi
@@ -28,7 +28,6 @@ from rhnapi import packages
 from rhnapi import utils
 
 from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
-
 
 # configuration variables. Probably okay, actually.
 RHNCONFIG = '~/.rhninfo'
@@ -51,7 +50,7 @@ plus any errata that provide those packages (if there are any)."""
     parser.add_option("--debug", action = "store_true", default = False,
             help = "enable debug output for RHN session (XMLRPC errors etc")
     parser.add_option("-v", "--verbose", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+            help = "enable informational output for RHN session (XMLRPC errors etc")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -59,33 +58,28 @@ plus any errata that provide those packages (if there are any)."""
     rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
     rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
-    rhngrp.add_option("--cache", action = "store_true", default = False,
-        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--cache", action = "store_true", default = False, help = "save usernames and password in config file, if missing")
     parser.add_option_group(rhngrp)
 
     # script-specific options
     sysgrp = OptionGroup(parser, "System and Channel selection")
-    sysgrp.add_option("-o", "--output", default = None, help = "output data to this filename as JSON, for later use")
+    sysgrp.add_option("-f", "--output", default = None, help = "output data to this filename as JSON, for later use")
+    sysgrp.add_option("-r", "--report", action = "store_true", default = False, help = "Output a somewhat formatted report output on stdout, can be used with -o")
     sysgrp.add_option("-p", "--profile", default = None, help = "only process this system profile name.")
-    sysgrp.add_option("-c", "--channel", default = None,
-        help="channel name to diff against. Optional - only if not the system's current base channel")
-    sysgrp.add_option("-a", "--all", dest = "consolidate", default = False, action = "store_true",
-        help = "just summarize all provided systems, not one at a time")
+    sysgrp.add_option("-i", "--system_id", default = None, help = "only process this system profile ID (useful if there are duplicate systems with the same name)")
+    sysgrp.add_option("-c", "--channel", default = None, help="channel name to diff against. Optional - only if not the system's current base channel")
+    sysgrp.add_option("-C", "--child", action = "store_true", default = False, help="Include child channels, subscribed channels if per-system, or all children of the channel in conjunction with --channel")
+    sysgrp.add_option("-a", "--all", dest = "consolidate", default = False, action = "store_true", help = "just summarize all provided systems, not one at a time")
     parser.add_option_group(sysgrp)
 
     # this is quite a long-running script, so offer to show a progressbar if needed.
-    parser.add_option("-q", "--quiet", action = "store_true", default = False,
-            help = "hide output (progressbars etc). Conflicts with -d/--debug.")
+    parser.add_option("-P", "--progress", action = "store_true", default = False,
+            help = "show progress bars for long-running processes. Conflicts with --debug.")
 
     opts, args = parser.parse_args()
     # check the args for errors etc...
-    if not opts.channel and not opts.profile:
-        print "you must provide either a system profile name or a channel label."
-        parser.print_help()
-        sys.exit(1)
-
-    if opts.quiet and opts.debug:
-        print "you have specified both --quiet and --debug. You can't have it both ways!"
+    if not opts.channel and not ( opts.profile or opts.system_id):
+        print "you must provide either a system profile name, an ID or a channel label."
         parser.print_help()
         sys.exit(1)
 
@@ -123,7 +117,7 @@ def get_pkgids(rhn, packagelist, progressbar = True):
                     pkg[k] = v
         if progressbar:
             pbar.update(count)
-    # print
+    #print
     return packagelist
 
 # --------------------------------------------------------------------------------- #
@@ -138,7 +132,7 @@ def check_unknown(pkglist):
     return True
 
 # --------------------------------------------------------------------------------- #
-def diff_package_lists(system_pkgs, channel_pkgs):
+def diff_missing_pkgs(system_pkgs, channel_pkgs):
     """
     Take 2 package lists and calculate stuff in pkglist1 not in pkglist 2
     Specifically this will include updates beyond the channel update level
@@ -149,10 +143,37 @@ def diff_package_lists(system_pkgs, channel_pkgs):
     return pkgdiffs
 
 # --------------------------------------------------------------------------------- #
+def latest_channel_pkg(pkg, channel_pkgs):
+    """
+    Match packages in channel_pkgs with the same name as pkg, if there is more than one
+    we return the latest version in the channel
+    Note this is probably best run on the reduced channel list as it will be faster 
+    since the "channel latest" comparison has already been done for us
+    """
+    matchpkgs = [ x for x in channel_pkgs if x.has_key('id') and x['name'] == pkg['name'] ]
+    latestpkg=None
+    if len(matchpkgs) == 0:
+        logging.debug("Failed to find channel package for %s" % pkg['name'])
+    elif len(matchpkgs) == 1:
+        logging.debug("Found one channel package for %s" % pkg['name'])
+        latestpkg=matchpkgs[0]
+    else:
+        # If matchpkgs is longer than one, reduce it with latest_pkg
+        logging.debug("Found %d channel packages for %s" % (len(matchpkgs), pkg['name']))
+        latestpkg=matchpkgs[0]
+        for match in matchpkgs:
+            cmppkg = latest_pkg(match,latestpkg)
+            if cmppkg != None:
+                latestpkg = cmppkg
+
+    return latestpkg
+
+# --------------------------------------------------------------------------------- #
 
 def latest_pkg(pkg1, pkg2):
     """
     Compares 2 package objects (dicts) and returns the newest one.
+    If the objects are the same, we return None
     Comparisons are done using RPM label compares (architecture is not relevant here)
     This is only useful for comparing 2 versions of the same package, or results might
     be a little confusing.
@@ -167,15 +188,12 @@ def latest_pkg(pkg1, pkg2):
         return pkg1
     elif result == -1:
         return pkg2
-    elif result == 0:
-        # in this case they are the same
-        return pkg1
     else:
         return None
 
 # --------------------------------------------------------------------------------- #
 
-def index_by_arch(pkglist, progressbar = False, verbose = False):
+def index_by_arch(pkglist, progressbar = False):
     """
     returns an index of the given package list (for ease of reduction)
     extend this for
@@ -185,8 +203,7 @@ def index_by_arch(pkglist, progressbar = False, verbose = False):
     if progressbar:
         widgets = ['Indexing packages by architecture: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
         pbar = ProgressBar(widgets=widgets, maxval=len(pkglist), term_width=80).start()
-    if verbose:
-        print "indexing package list (%d items) by name and architecture" % len(pkglist)
+    logging.debug("indexing package list (%d items) by name and architecture" % len(pkglist))
     for pkg in pkglist:
         name = pkg['name']
         arch = pkg['arch_label']
@@ -201,28 +218,26 @@ def index_by_arch(pkglist, progressbar = False, verbose = False):
         pkgindex[pkg['name']][pkg['arch_label']].append(pkg)
         if progressbar:
             pbar.update(pkglist.index(pkg) +1)
-    if verbose:
-        print "indexed %d packages" % len(pkgindex)
+    logging.info("indexed %d packages" % len(pkgindex))
     return pkgindex
 
 # --------------------------------------------------------------------------------- #
 
-def reduce_by_arch(pkglist, progressbar = False, verbose = False):
+def reduce_by_arch(pkglist, progressbar = False):
     """
     returns a reduced package list, containing the latest version of any package for each architecture.
     (i.e. if zsh is in the channel both in i386 and x86_64 arches, returns the latest version for each.
     Which should really be the same, but just in case...)
     """
     # first, index the package list by name for ease of comparison:
-    pkgindex = index_by_arch(pkglist, progressbar = progressbar, verbose = verbose)
+    pkgindex = index_by_arch(pkglist, progressbar = progressbar)
 
     reduced_list = []
-    if verbose:
-        print "reducing package list (%d items) to latest versions only (for each architecture)" % len(pkglist)
     if progressbar:
         widgets = ['Reducing package list to latest versions: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
         pbar = ProgressBar(widgets=widgets, maxval=len(pkgindex), term_width=80).start()
         counter = 0
+    logging.info("reducing package list (%d items) to latest versions only (for each architecture)" % len(pkglist))
     for pkgname, archdict in pkgindex.iteritems():
         for arch, pkgobjs in archdict.iteritems():
             if len(pkgobjs) == 0:
@@ -241,12 +256,22 @@ def reduce_by_arch(pkglist, progressbar = False, verbose = False):
         if progressbar:
             counter += 1
             pbar.update(counter)
-    if verbose:
-        print "reduced packagelist to %d entries" % len(reduced_list)
-    print
+    logging.info("reduced packagelist to %d entries" % len(reduced_list))
     return reduced_list
 
-def process_system(rhn, systemobj, channelpackagelist, progressbar = False, packagedict = {}, verbose = False):
+# --------------------------------------------------------------------------------- #
+def pkg_errata(rhn, pkg):
+    """
+    Returns a list of errata which provide the package pkg
+    """
+    errnames = []
+    errlist = packages.listProvidingErrata(RHN, pkg['id'])
+    if len(errlist) > 0:
+        errnames = [ x['advisory'] for x in errlist ]
+    return errnames
+        
+# --------------------------------------------------------------------------------- #
+def process_system(rhn, systemobj, reducedpackagelist, progressbar = False, packagedict = {}, report = False):
     """
     Abstracts the system processing parts
     This is run per system and compares its package set to the (reduced) channel package list,
@@ -256,31 +281,57 @@ def process_system(rhn, systemobj, channelpackagelist, progressbar = False, pack
     results = packagedict
     installed_pkgs = system.listPackages(RHN, systemobj['id'])
     if check_unknown(installed_pkgs):
+        if report:
+            print "SYSTEM_PACKAGE STATUS CHANNEL_LATEST ERRATA_CONTAINING_NEWEST"
         sys_pkgs = get_pkgids(RHN, installed_pkgs, progressbar = progressbar)
-        chandiffs = sorted(diff_package_lists(sys_pkgs, chan_pkgs), key=itemgetter('name'))
-        if progressbar:
-            widgets = ['Finding Errata for packages: ', Counter(), ' packages [', Percentage(), ']', '(', Timer(), ')']
-            pbar = ProgressBar(widgets=widgets, maxval=len(chandiffs), term_width=80).start()
-        for pkg in chandiffs:
-            counter = 1 + chandiffs.index(pkg)
+        for pkg in sorted(sys_pkgs, key=itemgetter('name')):
+
             pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s" % pkg
-            errlist = packages.listProvidingErrata(RHN, pkg['id'])
-            if len(errlist) > 0:
-                errnames = [ x['advisory'] for x in errlist ]
-                if results.has_key(pkgstr):
-                    for errname in errnames:
-                        if errname not in results[pkgstr]:
-                            results.append(errname)
+
+            # Find the latest package in the channel list matching this package name
+            # This will allow us to determine if a package has been updated beyond the
+            # channel latest out of band (rather than just saying "missing" we can say "newer"
+            # also it allows us to show the latest in the channel when a package is out of date
+            channel_latest = latest_channel_pkg(pkg, reducedpackagelist)
+            if channel_latest:
+                # We matched another package with the same name, is it older or newer?
+                chpkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s" % channel_latest
+                latestpkg = latest_pkg(channel_latest, pkg)
+                if latestpkg != None:
+                    if ( latestpkg == channel_latest ):
+                        logging.info("%s is OLDER than channel latest version %s" % (pkgstr, chpkgstr))
+                        pkgerrata = pkg_errata(RHN, channel_latest)
+                        if report:
+                            print "%s OLDER_THAN_CHANNEL_LATEST %s %s" % (pkgstr, chpkgstr, ",".join(pkgerrata))
+                        if results.has_key('older'):
+                            if pkgstr not in results['older']:
+                                results['older'].append(pkgstr)
+                        else:
+                            results['older'] = [ pkgstr ]
+                    elif ( latestpkg == pkg ):
+                        logging.info("%s is newer than channel latest version %s" % (pkgstr, chpkgstr))
+                        pkgerrata = pkg_errata(RHN, pkg)
+                        if report:
+                            print "%s NEWER_THAN_CHANNEL_LATEST %s %s" % (pkgstr, chpkgstr, ",".join(pkgerrata))
+                        if results.has_key('newer'):
+                            if pkgstr not in results['newer']:
+                                results['newer'].append(pkgstr)
+                        else:
+                            results['newer'] = [ pkgstr ]
                 else:
-                    results[pkgstr] = errnames
+                    logging.info("%s is the SAME as channel version %s" % (pkgstr, chpkgstr))
             else:
-                if results.has_key('noerrata'):
-                    if pkgstr not in results['noerrata']:
-                        results['noerrata'].append(pkgstr)
+                # There's nothing with the same name, so it really is missing from the channel
+                pkgerrata = pkg_errata(RHN, pkg)
+                logging.info("%s is not found in channel" % pkgstr)
+                if report:
+                    print "%s NOT_FOUND_IN_CHANNEL None %s" % (pkgstr, ",".join(pkgerrata))
+                if results.has_key('missing'):
+                    if pkgstr not in results['missing']:
+                        results['missing'].append(pkgstr)
                 else:
-                    results['noerrata'] = [ pkgstr ]
-            if progressbar:
-                pbar.update(counter)
+                    results['missing'] = [ pkgstr ]
+
     else:
         print "system %s has an outdated version of up2date, please update it" % systemobj['name']
         return None
@@ -293,43 +344,58 @@ if __name__ == '__main__':
     
     # parse the command line
     opts, args = parse_cmdline(sys.argv)
-    if opts.quiet:
-        verbose = False
-        showprogress = False
-        debug = False
+    if opts.debug:
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+        opts.verbose=True # For pprint below
+        logging.debug("Debug level logging enabled")
+    elif opts.verbose:
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
     else:
-        showprogress = True
-        verbose = opts.verbose
-        debug = opts.debug
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.WARNING)
 
     # initialise an RHN Session (the try...except block allows us to interrupt with Ctrl-C)
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
         # did we require debugging? lots of unpleasant output on failure if we did...
-        if debug:
+        if opts.debug:
             RHN.enableDebug()
 
-        if opts.profile:
-            # then we are only queying one system
+        if opts.profile or opts.system_id:
+            # then we are only querying one system, lookup by name or ID
             try:
                 # lookup the systemid for this system, taking the one that most recently checked in,
                 # if there is more than one. (This call always returns a list, or throws an exception)
-                systemobj = sorted(system.getId(RHN, opts.profile), key=itemgetter('last_checkin'), reverse = True)[0]
+                if opts.system_id:
+                    # lookup the system via ID using system.getName, this returns an object of the same type as getId, and 
+                    # since the systemobj['id'] is used hereafter, it should cope with duplicate system names
+                    logging.debug("getting systemobj by ID %s" % opts.system_id)
+                    systemobj = system.getName(RHN, int(opts.system_id))
+                else:
+                    logging.debug("getting systemobj by name %s" % opts.profile)
+                    systemobj = sorted(system.getId(RHN, opts.profile), key=itemgetter('last_checkin'), reverse = True)[0]
+                logging.debug("Got ID %s for system %s" % (systemobj['id'], systemobj['name']))
             except:
-                print "unable to lookup system record %s. Please check and try again" % opts.profile
+                print "unable to lookup system record. Please check ID/Profile argument and try again"
                 sys.exit(3)
 
             system_list = [ systemobj ]
+            childchannels = []
             # if we didn't choose a channel to diff against, use the system's base channel:
             if not opts.channel:           
                 basechannel = system.getBaseChannel(RHN, systemobj['id'])
-                if verbose:
-                    print "using software channel '%s' (registered base channel for %s)" %( basechannel, opts.profile)
+                logging.info("using base channel %s for %s" %( basechannel, opts.profile))
+                if opts.child:
+                    childchannels = system.getChildChannels(RHN, systemobj['id'])
+                    logging.info("using child channels %s for %s)" %( childchannels, opts.profile))
 
         if opts.channel:
-            # we are querying a whole channel and all its subscribed systems
+            # we are specifying a channel, this means either all systems subscribed, or if -p/-i specified
+            # then we diff a specific system against a channel other than it's subscribed channel(s)
             basechannel = opts.channel
-            if opts.profile:
+            if opts.child:
+                # TODO: the --child feature only works per system at the moment, I guess we just list all channel children here?
+                logging.warning("child recursion not yet implemented for --channel mode")
+            if opts.profile or opts.system_id:
                 # then we should already have a  'systemobj' record
                 system_list = [ systemobj ]
             else:
@@ -338,30 +404,32 @@ if __name__ == '__main__':
         # was used for progress reports...
         syscount = len(system_list)
 
-        if not opts.quiet:
-            print "Getting a list of packages in channel %s" % basechannel
+        logging.info("Getting a list of packages in channel %s" % basechannel)
         chan_pkgs = channel.listAllPackages(RHN, basechannel)
-        if not opts.quiet:
-            print "reducing package list to latest available versions only"
-        reduced_pkgs = reduce_by_arch(chan_pkgs, showprogress, verbose)
+        for child in childchannels:
+            logging.debug("Adding packages from child channel %s" % child)
+            chan_pkgs += channel.listAllPackages(RHN, child)
+
+        logging.debug("reducing package list to latest available versions only")
+        reduced_pkgs = reduce_by_arch(chan_pkgs, opts.progress)
 
         # now process each system
         counter = 1
         global systemdiff
         systemdiff = {}
         for sysrecord in system_list:
-            if not opts.quiet:
-                print "finding newer packages and associated errata for %s [%d of %d]" % (sysrecord['name'], counter, syscount)
-            process_system(RHN, sysrecord, reduced_pkgs, progressbar = showprogress, packagedict = systemdiff)
-            print "package diff now has %d entries" %  len(systemdiff)
+            logging.debug("finding package differences for %s [%d of %d]" % (sysrecord['name'], counter, syscount))
+            if opts.report:
+               print "SYSTEM(%s,%d) : ----- : CHANNELS(%s,%s)" % (sysrecord['name'], systemobj['id'], basechannel, ",".join(childchannels)) 
+            process_system(RHN, sysrecord, reduced_pkgs, progressbar = opts.progress, packagedict = systemdiff, report = opts.report)
+            logging.debug("package diff now has %d entries" %  len(systemdiff))
             counter += 1
 
-        if verbose:
+        if opts.verbose:
             pprint(systemdiff)
 
         if opts.output:
-            if verbose:
-                print "dumping JSON records to output file %s" % opts.output
+            logging.info("dumping JSON records to output file %s" % opts.output)
             if os.path.exists(opts.output):
                 res = prompt_confirm('overwrite existing file %s' % opts.output)
             else:
@@ -374,3 +442,8 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print "operation cancelled"
         sys.exit(1)
+
+
+    
+    
+    
