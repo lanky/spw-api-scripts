@@ -157,8 +157,10 @@ def latest_pkg(pkg1, pkg2):
     This is only useful for comparing 2 versions of the same package, or results might
     be a little confusing.
     """
-    t1 = (pkg1['epoch'], pkg1['version'], pkg1['release'])
-    t2 = (pkg2['epoch'], pkg2['version'], pkg2['release'])
+    # Sometimes empty epoch is a space, and sometimes its an empty string, which 
+    # breaks the comparison, strip it here to fix
+    t1 = (pkg1['epoch'].strip(), pkg1['version'], pkg1['release'])
+    t2 = (pkg2['epoch'].strip(), pkg2['version'], pkg2['release'])
 
     result = rpm.labelCompare(t1, t2)
     if result == 1:
