@@ -21,6 +21,7 @@ import logging
 # custom module imports
 import rhnapi
 from rhnapi import activationkey
+from rhnapi import user
 
 # configuration variables. Probably okay, actually.
 RHNCONFIG = '~/.rhninfo'
@@ -167,10 +168,11 @@ if __name__ == '__main__':
         # handle debugging requests
         if opts.debug:
             RHN.enableDebug()
+        allkeys = activationkey.listActivationKeys(RHN)
         if opts.list:
             print "%-40s   Description" % "Key"
             print "----------------------------------------   ----------------------"
-            for akey in activationkey.listActivationKeys(RHN):
+            for akey in allkeys:
                 if react_re.search(akey['description']) is None:
                     print "%(key)-40s | %(description)s" % akey
             sys.exit(0)
@@ -183,7 +185,7 @@ if __name__ == '__main__':
         # configuration channels in rank order
         logging.debug("Got source object for key %s, entitlements=%s" % (srcobj['key'], srcobj['entitlements']))
         if 'provisioning_entitled' in srcobj['entitlements']:
-            logging.info("key %s is provisioning entitled, getting config channels")
+            logging.info("key %s is provisioning entitled, getting config channels" % srcobj['key'])
             srcobj['config_channels'] = [ x['label'] for x in activationkey.listConfigChannels(RHN, srckey) ]
             logging.debug("%s, number of config channels=%d" % (srcobj['key'], len(srcobj['config_channels'])))
             # config deployment
@@ -195,7 +197,20 @@ if __name__ == '__main__':
         clonekey = opts.key or ''
         clonedesc = opts.description or "%s - Cloned on %s" %(srcobj['description'], time.strftime('%Y%m%d'))
 
-        clone_activationkey(RHN, srcobj, clonedesc, clonekey, opts.verbose)
+        # First, we check if the key already exists, this is complicated by the addition of an N- prefix for the org
+        # on key creation.  So we grab the orgid for the current user, and append that to the clonekey name (as thats
+        # what activationkey.create is about to do...
+        rhnuser = RHN.getRHNUser()
+        userdetails = user.getDetails(RHN, rhnuser)
+        logging.debug("Got details for user %s, orgid=%d" % (rhnuser, userdetails['org_id']))
+        orgclonekey = "%s-%s" % (userdetails['org_id'], clonekey)
+        logging.info("Checking if key %s exists already" % orgclonekey)
+        if clonekey in [ x['key'] for x in allkeys ]:
+            logging.error("key %s already exists!")
+            sys.exit(1)
+        else:
+            logging.debug("About to clone %s as %s" % (srcobj['key'], clonekey))
+            clone_activationkey(RHN, srcobj, clonedesc, clonekey, opts.verbose)
                 
 
 
@@ -204,7 +219,3 @@ if __name__ == '__main__':
         print "Operation cancelled by keystroke."
         sys.exit(1)
 
-
-    
-    
-    
