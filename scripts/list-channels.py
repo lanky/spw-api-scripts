@@ -69,16 +69,26 @@ def prettify(rhn, chanlist, verbose=False, regex = None, numbers=False):
     pretty-print channels and their children
     requires that the list has been processed using addChildren above
     """
+    if float(rhn.sat_version[0:3]) < 5.4:
+        # earlier versions of satellite (pre-5.4) don't have the listChildChannels call
+        # so we have to do this the hard way
+        allchannels = [ channel.detailsByLabel(RHN, x['label']) for x in channel.listAllChannels(RHN) ]
     for chan in chanlist:
         if numbers:
             print "%s (%d)" %(chan, len(channel.listSubscribedSystems(rhn, chan)))
         else:
             print "%s" % chan
-        for child in channel.listChildChannels(rhn, chan):
-            if numbers:
-                print "  |- %s (%d)" % (child, len(channel.listSubscribedSystems(rhn, child)))
-            else:
-                print "  |- %s" % child
+        if float(rhn.sat_version[0:3]) < 5.4:
+            childchannels = [ x['label'] for x in allchannels if x['parent_channel_label'] == chan ]
+        else:
+            childchannels =  channel.listChildChannels(rhn, chan)
+        has_children = len(childchannels) > 0
+        if has_children:            
+            for child in childchannels:
+                if numbers:
+                    print "  |- %s (%d)" % (child, len(channel.listSubscribedSystems(rhn, child)))
+                else:
+                    print "  |- %s" % child
 
         
 # --------------------------------------------------------------------------------- #
@@ -103,6 +113,8 @@ if __name__ == '__main__':
             basechannels = channel.listBaseChannels(RHN)
         # prettify(plist, opts.verbose, opts.regex)
         print "channel label (number of subscribed systems)"
+        if opts.debug:
+            print '\n'.join(basechannels)
         prettify(RHN, basechannels, numbers = opts.numbers)
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
