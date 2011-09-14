@@ -1,0 +1,52 @@
+CONTENTS OF THIS DIRECTORY
+  templates/          - templates for new scripts/config files with the API module
+
+SCRIPTS
+These should all have -h/--help options (totally overengineered in this regard) and (might) do what they sound like.
+
+  THE SCRIPTS...
+*    audit-packages.py                  - audits a system's package list against its subscribed channels. Can produce CSV output
+                                          (essentially a second implementation of compare-system-to-channel.py)
+*    channel-errata.py                  - Compares a cloned channel to its source and lists unsynced errata for review
+*    channel-org-access.py              - sets access from 
+*    clone-activationkey.py             - clones an activation key
+*    clone-channel.py                   - clones software channels (recursively if required)
+*    clone-configchannel.py             - clones a configuration channel
+*    clone-errata.py                    - clones/publishes errata by advisory name into a channel of you choice.
+*    compare-channel-pkglist.py         - compares a channel package list to the output of rpm -qa from a given server.
+*    compare-system-to-channel.py       - compares a system to its subscribed software channel (or another)
+                                          to list packages in one but not the other.
+*    create-channel.py                  - create a software channel with the chosen options
+*    delete-activationkey.py            - deletes activation key
+*    delete-channel.py                  - deletes software channels
+*    delete-configchannel.py            - deletes config channels
+*    delete-kickstart.py                - deletes a kickstart profile.
+*    export-activationkeys.py           - exports activation keys to JSON
+*    export-configchannels.py           - exports config channels to JSON
+*    export-kickstarts.py               - exports kickstart profiles to JSON
+*    import-activationkeys.py           - imports activation keys from a JSON dump
+*    import-configchannels.py           - imports configuration channels from a JSON dump
+*    import-kickstarts.py               - imports kickstart profiles from a JSON dump
+*    list-activationkeys.py             - lists activation keys and descriptions
+*    list-channels.py                   - channels in a pretty tree format. Accepts regex.
+*    list-configfiles.py                - shows config files from a given config channel, plus properties
+*    list-duplicate-systems.py          - shows duplicate systems (not necessary on 5.4+, but works with 5.3)
+*    list-errata-for-package.py         - searches for errata providing a given package (to assist with cloning)
+*    list-unknown-arch-systems.py       - lists all systems on the satellite with packages marked as of 'unknown' arch.
+*    upload-config-file.py              - does exactly what it says on the tin :)
+
+
+
+CONFIG FILE
+  I'd create a ~/.rhninfo file if I were you (you'll be prompted for user info anyway, but it simplifies things)
+  password/login as None essentially means 'prompt'
+  see templates/rhninfo.template, but it looks like this:
+
+[DEFAULT]
+login=None
+password=None
+
+[your.sat.server]
+login=xxxxxx
+password=None
+
