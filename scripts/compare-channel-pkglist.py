@@ -94,7 +94,7 @@ def main():
     outputfile = inputfile.replace('.txt','.json')
     try:
         # initialise an RHN Session
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         # while in development:
         if opts.debug:
             RHN.enableDebug()

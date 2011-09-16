@@ -179,7 +179,7 @@ if __name__ == '__main__':
 
     try:
         # connect to RHN:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         if opts.debug:
             RHN.enableDebug()
         # get a list of all existing channels - allows us to check for existing channels.

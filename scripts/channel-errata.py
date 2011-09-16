@@ -271,7 +271,7 @@ if __name__ == '__main__':
         sys.exit(0)
 
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         # handle debugging requests
         if opts.debug:
             RHN.enableDebug()

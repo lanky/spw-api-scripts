@@ -272,7 +272,7 @@ if __name__ == '__main__':
     # initialise an RHN Session
     try:
         logger.info("connecting to RHN Server %s as user %s" %(opts.server, opts.login))
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         satversion = float(RHN.sat_version[0:3])
 
         # handle debugging requests

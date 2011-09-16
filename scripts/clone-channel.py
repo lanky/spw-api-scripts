@@ -137,7 +137,7 @@ if __name__ == '__main__':
 
     # initialiase an RHN Session
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         if opts.debug:
             RHN.enableDebug()
 

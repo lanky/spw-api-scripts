@@ -79,7 +79,7 @@ if __name__ == '__main__':
     opts, chanlist = parse_cmdline(sys.argv)
     try:
         # login to our satellite
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         # did we give the --debug switch?
         if opts.debug:
             RHN.enableDebug()

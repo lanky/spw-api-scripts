@@ -16,6 +16,8 @@ import sys
 from optparse import OptionParser, OptionGroup
 from operator import itemgetter
 
+# debugging - use dev version of rhnapi
+sys.path.insert(0, '/home/nr58/scripts/rhnapi-scripts/python-rhnapi')
 # custom module imports
 import rhnapi
 from rhnapi import system
@@ -65,7 +67,7 @@ if __name__ == '__main__':
     opts, args = parse_cmdline(sys.argv[1:])
     # initialise an RHN Session
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         # handle debugging requests
         if opts.debug:
             RHN.enableDebug()

@@ -66,7 +66,7 @@ if __name__ == '__main__':
     opts, args = parse_cmdline(sys.argv)
     # initialiase an RHN Session
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         if opts.debug:
             RHN.enableDebug()
         print "%-40s   Description" % "Key"

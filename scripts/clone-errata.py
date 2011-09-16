@@ -82,7 +82,7 @@ if __name__ == '__main__':
     # initialise an RHN Session
     # safety mechanism until the script actually works:
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
         if opts.debug:
             RHN.enableDebug()
         channel_list = opts.channel.split(',')
