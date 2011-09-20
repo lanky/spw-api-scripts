@@ -40,15 +40,6 @@ setup(name = 'satellite-api-utils',
           "scripts/list-unknown-arch-systems.py",
           "scripts/upload-config-file.py",
       ],
-      data_files = [
-        ["docs", [ "templates/apiscript.template",
-                   "templates/channel-errata.conf",
-                   "templates/README.templates",
-                   "templates/rhninfo.template",
-                   "README.scripts",
-                   ]
-        ],
-      ],
       )
 
 
