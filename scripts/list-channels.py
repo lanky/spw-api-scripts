@@ -112,7 +112,10 @@ if __name__ == '__main__':
         else:
             basechannels = channel.listBaseChannels(RHN)
         # prettify(plist, opts.verbose, opts.regex)
-        print "channel label (number of subscribed systems)"
+        if opts.numbers:
+            print "channel label (number of subscribed systems)"
+        else:
+            print "channel label"
         if opts.debug:
             print '\n'.join(basechannels)
         prettify(RHN, basechannels, numbers = opts.numbers)
