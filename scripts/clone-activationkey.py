@@ -141,7 +141,7 @@ def clone_activationkey(rhn, keyobj, description , newkey = '', verbose = False)
         if len(servergroups) > 0:
             if activationkey.addServerGroups(RHN, newkey, servergroups):
                 print "Added Server Groups"
-                for grp in servergrps:
+                for grp in servergroups:
                     print "  - %d" % grp
 
         if keyobj.get('config_deploy', False):
