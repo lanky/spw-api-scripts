@@ -1,0 +1,16 @@
+{
+    "template": {
+        "source": "source channel label", 
+        "chan": "channel label",
+        "children": [
+            {
+                "source": "source channel label", 
+                "chan": "channel label"
+            }, 
+            {
+                "source": "source channel label", 
+                "chan": "channel label"
+            }
+        ]
+    } 
+}
