@@ -47,7 +47,7 @@ RHNUSER = None
 RHNPASS = None
 
 # configuration for channel mappings and output.
-SYSCONFIG = [ '/etc/sysconfig/channel-mappings.conf']
+SYSCONFIG = '/etc/sysconfig/channel-mappings.conf'
 LOCALCONFIG = os.path.expanduser('~/.rhn-channels.conf')
 # should we stick this in a configfile too?
 MAXLENGTH = 40
