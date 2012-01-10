@@ -4,8 +4,14 @@
 # or its parent directory added using sys.path.append
 """
 API script template file.
+
+Diffs installed package lists for subscribed systems against a base
+software channel and all child channels.
+Intended to show systems that have packages installed locally which are not in the
+satellite (or are newer than those available from the satellite.)
+Needs a base channel label to work with.
 """
-__author__ = "Your Name <email>"
+__author__ = "Stuart Sears <stuart@sjsears.com>"
 
 # standard library imports
 import sys
@@ -309,7 +315,6 @@ if __name__ == '__main__':
             chanidx = set([p['nvrea'].strip() for p in channelpkgs])
             
             # list of subscribed systems in this format:
-            # {'selectable': 1, 'id': 1000010885, 'name': 'ukirpb02.uk.tescobank.org'}
             logger.info("Getting a list of systems subscribed to base channel %s" % chanlabel)
             systemlist = channel.listSubscribedSystems(RHN, chanlabel)
 
@@ -346,19 +351,7 @@ if __name__ == '__main__':
             if opts.output:
                 utils.csv_report(systemlist, opts.output, fields = ['name', 'id', 'missing', 'newer', 'older', 'basechannel', 'childchannels', 'last_checkin'])
 
-
-
-                
-
-            
-
-
         # DO STUFF with your RHN session and commandline options
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)
-
-
-    
-    
-    

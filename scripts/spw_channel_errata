@@ -337,34 +337,7 @@ if __name__ == '__main__':
                         sys.exit(2)
 
                 outfile.writelines(lines)
-                        
-
-
-                            
-
             
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)
-
-"""
-[ { 'channel': 'aegon-rhel-as-4.9-base-x86_64',
-    'source': 'rhel-x86_64-as-4',
-    'security' : [
-        { 'advisory': 'RHSA-...',
-          'packages' : 'package1,package2...'
-          'bugs' : 'bug1,bug2,bug3...'
-        },
-        {...},
-        ...
-     ]
-     'bugfix' : ...
-         }
-    'systems' : [...]
-  }
-]  
-                      
-"""
-    
-    
-    
