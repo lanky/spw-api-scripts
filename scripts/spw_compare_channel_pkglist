@@ -1,18 +1,40 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# RHN XMLRPC API script using the rhnapi python module
-# the module will need to be on your PYTHONPATH
-# or its parent directory added using sys.path.append
-"""
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+__doc__ = """
 Compares a textdump of 'rpm -qa' from a system to a channel in RHN
-the rpm -qa output should look like this:
+
+The rpm -qa output should look like this:
 NAME|VERSION|RELEASE|ARCH|EPOCH
 
 so set your --queryformat appropriately
 e.g. rpm -qa --queryformat '%{NAME}|%{VERSION}|%{RELEASE}|%{ARCH}|%{EPOCH}\n'
 
-The separator for these fields can be specified on the commandline.
+The separator for these fields can be specified on the commandline, if you absolutely must.
 """
+__author__ = "Stuart Sears <stuart@sjsears.com>
+
 # standard library imports
 import sys
 import os

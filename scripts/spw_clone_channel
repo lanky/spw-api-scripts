@@ -1,12 +1,32 @@
 #!/usr/bin/env python
-# a script to clone a channel
-# Can automate clone channel creation, including recursive cloning of base
-# channels and their children
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears / Steven Hardy
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
 
 """
-clone-channel.py
+spw_clone_channel
 
 A script to clone a channel in your RHN Satellite, with or without errata.
+Can recursively clone channels with all their children
 
 This requires the presence of the 'rhnapi' module on your PYTHONPATH.
 """

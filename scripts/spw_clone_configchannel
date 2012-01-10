@@ -1,16 +1,34 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# json2configchannel.py
-# A script to create config channels on an RHN satellite from JSON dumps
-# author: Stuart Sears <sjs@redhat.com>
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
 # This script may or may not do unpleasant things to your satellite.
 # make backups first.
 
 __doc__ = """
-clone-configchannel.py
+spw_clone_configchannel.py
 
-A script to create a cloned set of configuration channels on a satellite from a JSON dump.
-it will
+Clones configuration channels on an RHN Satellite / Spacewalk server.
+Process:
 * gather information about your chosen configuration channel
 * create a new, empty configchannel with the chosen name
 * create and populate files, directories and symlinks, based on the old channel content

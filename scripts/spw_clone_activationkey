@@ -1,13 +1,33 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# template API script using the rhnapi python module
-# the module will need to be on your PYTHONPATH
-# or its parent directory added using sys.path.append
-"""
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears / Steven Hardy
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+__doc__ = """
+spw_clone_activationkey
+
 A script to clone an activation key
 simply intended to copy it and all its settings to a new key, which we can then edit.
+
 """
-__author__ = "Your Name <email>"
+__author__ = "Stuart Sears <stuart@sjsears.com>"
 
 # standard library imports
 import sys
@@ -212,8 +232,6 @@ if __name__ == '__main__':
             logging.debug("About to clone %s as %s" % (srcobj['key'], clonekey))
             clone_activationkey(RHN, srcobj, clonedesc, clonekey, opts.verbose)
                 
-
-
         # DO STUFF with your RHN session and commandline options
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."

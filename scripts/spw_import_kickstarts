@@ -1,15 +1,34 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# a script to import a kickstart file from a JSON dump file
-# created by the companion kickstart2json script
-# author Stuart Sears <sjs@redhat.com>
-# this has only been slightly tested but appears to work
-# as with all unsuppoted scripts, backup your satellite DB
-# before running this, as it may have unforseen effects.
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
 
 __doc__ = """
 a script to import kickstart profiles from a JSON dump file
 created by the companion export-kickstarts.py script
+
+this has only been slightly tested but appears to work
+as with all unsuppoted scripts, backup your satellite DB
+before running this, as it may have unforseen effects.
 """
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
@@ -43,7 +62,7 @@ def parse_cmdline(argv):
     """
     process the commandline :)
     """
-    preamble = "Load and import kickstart profiles from a JSON-format text file (created by export-kickstarts.py)"
+    preamble = "Load and import kickstart profiles from a JSON-format text file (created by spw_export_kickstarts)"
     usagestr = "%prog [OPTIONS]... JSONFILE"
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)

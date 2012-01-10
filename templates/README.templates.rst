@@ -1,5 +1,6 @@
+=================================
 README for templates subdirectory
-
+=================================
 This directory contains templates for 
 1. RHN api scripts in python, using the rhnapi module, containing:
 - a basic commandline parser

@@ -1,17 +1,35 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# -*- coding: utf-8 -*-
-# template API script using the rhnapi python module
-# the module will need to be on your PYTHONPATH
-# or its parent directory added using sys.path.append
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi and python and python-progressbar modules
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
 
 __doc__ = """
-channel-errata.py
+spw_channel_errata
+
 A script to summarise the available errata for your cloned channels, in their source channel.
-Requires the use of a configuration file in .ini format, with sections like this:
+requires the use of a configuration file in .ini format, with sections like this:
 [channel-label]
 source = source-channel-label
-errata = ALL
+errata = all
 
 where errata can be a comma-separated list of these:
 security    - for security announcements
