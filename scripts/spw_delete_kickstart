@@ -1,17 +1,43 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# apitemplate.py
-"""
-delete-kickstart.py
-Irrevocably deletes a kickstart profile from your satellite
-back them up first using export-kickstarts.py
-"""
-import rhnapi
-#from rhapi import system
-from rhnapi import kickstart
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
+__doc__ = """
+spw_delete_kickstart
+
+Irrevocably deletes a kickstart profile from your satellite
+You can back them up first (using spw_export_kickstart(
+"""
+
+__author__ = "Stuart Sears <stuart@sjsears.com>"
+
+# std library imports
 import sys
 from optparse import OptionParser, OptionGroup
+
+
+# custom modules
+import rhnapi
+from rhnapi import kickstart
 
 # global vars for defaults
 # At least RHNHOST *must* be specified.
@@ -27,8 +53,8 @@ def parse_cmdline(argv):
     give this sys.argv[1:] as an argument to avoid any issues with the script name
     being considered an 'argument' and processed
     """
-    preamble = "Delete the provided kickstart profile from your satellite. Use with care."
-    usagestr = "%prog [OPTIONS] KICKSTART_LABELS"
+    preamble = "Delete the provided kickstart profile(s) from your satellite. Use with care."
+    usagestr = "%prog [OPTIONS] KICKSTART_LABEL..."
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
@@ -90,10 +116,10 @@ if __name__ == '__main__':
             if kslabel not in ks_labels:
                 print "no such kickstart profile: %s" % kslabel
 
-            if kickstart.deleteProfile(RHN, args[0]):
-                print "kickstart profile %s deleted" % args[0]
+            if kickstart.deleteProfile(RHN, kslabel):
+                print "kickstart profile %s deleted" % kslabel
             else:
-                print "failed to delete profile %s" % args[0]
+                print "failed to delete profile %s" % kslabel
             
 
         # do stuff
