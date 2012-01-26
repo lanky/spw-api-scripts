@@ -36,11 +36,10 @@ security    - for security announcements
 bugfix      - for bug fix errata
 enhancement - for new features.
 
-channels not in your config file will not be processed (as we don't know where
+Channels not in your config file will not be processed (as we don't know where
 they were cloned from)
 
-Requires the rhnapi python module somewhere on your pythonpath.
-and the 'progressbar' module.
+Requires the 'rhnapi'  and 'progressbar' python modules somewhere on your pythonpath.
 """
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
@@ -55,8 +54,6 @@ from operator import itemgetter
 import rhnapi
 from rhnapi import channel, errata, utils
 
-# from utils.progressbar import ProgressBar
-
 # configuration variables. Probably okay, actually.
 RHNCONFIG = '~/.rhninfo'
 RHNHOST = 'localhost'
@@ -70,11 +67,15 @@ LOCALCONFIG = os.path.expanduser('~/.rhn-channels.conf')
 # should we stick this in a configfile too?
 MAXLENGTH = 40
 
-from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
+from progressbar import Counter, Percentage, ProgressBar, Timer, Bar
 
 # --------------------------------------------------------------------------------- #
-# for ease of configuration:
-errmap    = {'security' : 'Security Advisory', 'bugfix'   : 'Bug Fix Advisory', 'enhancement' : 'Product Enhancement Advisory'}
+# for ease of configuration and pretty reporting:
+errmap = {
+          'security' : 'Security Advisory',
+          'bugfix'   : 'Bug Fix Advisory',
+          'enhancement' : 'Product Enhancement Advisory'
+         }
 
 # --------------------------------------------------------------------------------- #
 def parse_cmdline(argv):
