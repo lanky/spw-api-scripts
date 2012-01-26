@@ -454,7 +454,7 @@ if __name__ == '__main__':
         if opts.output:
             logging.info("dumping JSON records to output file %s" % opts.output)
             if os.path.exists(opts.output):
-                res = prompt_confirm('overwrite existing file %s' % opts.output)
+                res = utils.promptConfirm('overwrite existing file %s' % opts.output)
             else:
                 res = True
             if res:

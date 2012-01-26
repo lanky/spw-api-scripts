@@ -194,7 +194,7 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
                 add_fpres.append(fpres['name'])
             else:
                 if interactive:
-                    res = utils.prompt_confirm('create missing file preservation list %s' % fpres['name']) 
+                    res = utils.promptConfirm('create missing file preservation list %s' % fpres['name']) 
                 else:
                     res = True
 
@@ -243,7 +243,7 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
                 print "successfully added key %s" % akey['key']
         else:
             if interactive:
-                res = utils.prompt_confirm("activation key '%s (%s)' does not appear to already exist. Create it" % (akey['description'], akey['key']))
+                res = utils.promptConfirm("activation key '%s (%s)' does not appear to already exist. Create it" % (akey['description'], akey['key']))
             else:
                 res = True
             if res:
@@ -362,7 +362,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                 else:
                     # are we in interactive mode? This is passed all the way own from our commandline options
                     if interactive:
-                        res = utils.prompt_confirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
+                        res = utils.promptConfirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
                     else:
                         res = True
                    

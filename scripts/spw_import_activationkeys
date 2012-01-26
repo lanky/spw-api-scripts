@@ -203,7 +203,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                 else:
                     # are we in interactive mode? This is passed all the way own from our commandline options
                     if interactive:
-                        res = utils.prompt_confirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
+                        res = utils.promptConfirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
                     else:
                         res = True
                    

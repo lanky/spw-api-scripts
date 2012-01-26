@@ -89,7 +89,7 @@ def parse_cmdline(argv):
     if opts.source is None:
         print "no source channel label provided"
         if opts.interactive:
-            opts.source = utils.prompt_missing('source channel LABEL: ')
+            opts.source = utils.promptMissing('source channel LABEL: ')
         else:
             parser.print_help()
             sys.exit(1)
@@ -97,7 +97,7 @@ def parse_cmdline(argv):
     if opts.dest is None and opts.regex is None:
         print "no destination channel label or regex provided"
         if opts.interactive:
-            opts.dest = utils.prompt_missing('destination channel LABEL: ')
+            opts.dest = utils.promptMissing('destination channel LABEL: ')
         else:
             parser.print_help()
             sys.exit(1)
@@ -168,7 +168,7 @@ if __name__ == '__main__':
         source_channels = []
         if opts.source not in channels:
             if opts.interactive:
-                opts.src = utils.prompt_missing('Source Channel label: ')
+                opts.src = utils.promptMissing('Source Channel label: ')
             else:
                 logging.error("source channel %s does not exist. Please try again" % opts.source)
                 logging.error("The following channels exist on your satellite:")
@@ -204,7 +204,7 @@ if __name__ == '__main__':
         elif opts.dest in channels:
             logging.warning("Destination Channel label %s already exists. Please Choose an alternative" % opts.dest)
             if opts.interactive:
-               dest_channels += [ utils.prompt_missing('Destination Channel Label: ') ]
+               dest_channels += [ utils.promptMissing('Destination Channel Label: ') ]
             else:
                 sys.exit(2)
         else:
@@ -225,7 +225,7 @@ if __name__ == '__main__':
             logging.warning("Parent Channel is not an existing Base Channel. Please choose one of the following:")
             logging.warning( '\n'.join(parents))
             if opts.interactive:
-                opts.parent = utils.prompt_missing('Parent Channel Label: ')
+                opts.parent = utils.promptMissing('Parent Channel Label: ')
 
         # In interactive mode, summarise what is about to be cloned and ask for confirmation
         if opts.interactive:

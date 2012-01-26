@@ -28,9 +28,12 @@ from optparse import OptionParser, OptionGroup
 # Custom RHN Api Module
 import rhnapi
 from rhnapi import configchannel
+from rhnapi import utils
 
 __doc__ = """
 upload config files/directories to a given config channel
+kind of redundant in the face of rhncfg-manager, but useful for systems where that
+doesn't exist.
 """
 
 RHNHOST = 'localhost'
@@ -96,32 +99,16 @@ def parse_cmdline(argv):
     # ask for missing label, if we are in interactive mode
     if not opts.channel and opts.interactive:
         print "Missing required parameter (channel label)"
-        opts.channel = prompt_missing("Channel Label: ")
+        opts.channel = utils.promptMissing("Channel Label: ")
 
     # ask for missing path, if we are in interactive mode
     if not opts.path and opts.interactive:
         print "Missing Required parameter (path)"
-        prompt_missing("Path (when deployed): ")
+        utils.promptMissing("Path (when deployed): ")
 
     # finally...
     return opts, args
 
-# --------------------------------------------------------------------------------- #
-def prompt_missing(promptstr):
-    """
-    prompt for a missing element
-    """
-    return str(raw_input(promptstr))
-# --------------------------------------------------------------------------------- #
-def prompt_confirm(action, default='Y'):
-    """
-    prompt for a yes/no answer to an action
-    """
-    ans = raw_input('Really %s [%s]? ' %(action, default))
-    if str(ans).lower() == default.lower():
-        return True
-    else:
-        return False
 # --------------------------------------------------------------------------------- #
 
 if __name__ == '__main__':
