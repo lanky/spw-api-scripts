@@ -367,7 +367,7 @@ if __name__ == '__main__':
             # - a list of nvrea 
             compare_pkgs(systemlist, channelpkgs, logger)
             if opts.output:
-                utils.csv_report(systemlist, opts.output, fields = ['name', 'id', 'missing', 'newer', 'older', 'basechannel', 'childchannels', 'last_checkin'])
+                utils.csvReport(systemlist, opts.output, fields = ['name', 'id', 'missing', 'newer', 'older', 'basechannel', 'childchannels', 'last_checkin'])
 
         # DO STUFF with your RHN session and commandline options
     except KeyboardInterrupt:
