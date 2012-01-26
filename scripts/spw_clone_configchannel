@@ -35,6 +35,7 @@ Process:
 
 In doing this you lose version history on the files in the new channel - only the latest revision is imported.
 """
+
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
 # standard library imports
@@ -43,10 +44,7 @@ import os
 import time
 from optparse import OptionParser, OptionGroup
 
-# custom modules. Make sure they're on your PYTHONPATH
-# hint:
-# sys.path.append('parent directory of rhnapi')
-
+# -------------------------- custom module imports --------------------------- #
 import rhnapi
 from rhnapi import configchannel
 from rhnapi import utils
@@ -59,7 +57,7 @@ RHNCONFIG = '~/.rhninfo'
 RHNUSER = None
 RHNPASS = None
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def parse_cmdline(argv):
     """
@@ -89,7 +87,7 @@ def parse_cmdline(argv):
     # script-specific options
     ccgrp = OptionGroup(parser, "Configuration Channel Options")
     ccgrp.add_option("--list", action="store_true", default=False,
-        help="just list config channel labels in the JSON file and exit")
+        help="just list existing config channel labels and exit")
     ccgrp.add_option("-u","--update", action="store_true", default = False,
         help="Update existing channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-r","--replace", action="store_true", default = False,
@@ -108,7 +106,7 @@ def parse_cmdline(argv):
     # finally return the cleaned options and args
     return opts, args
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def get_confchannel_info(rhn, channel_label, verbose=False):
     """
@@ -123,7 +121,7 @@ def get_confchannel_info(rhn, channel_label, verbose=False):
         channeldata['files'].append(fentry)
     return channeldata
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_config_channel(rhn, chanobj, verbose=False):
     """
@@ -134,7 +132,7 @@ def create_config_channel(rhn, chanobj, verbose=False):
         existing_labels.append(chandata['label'])
         return True
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def add_channel_content(rhn, chanobj, verbose=False):
     """
@@ -171,7 +169,7 @@ def add_channel_content(rhn, chanobj, verbose=False):
     else:
         return None
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def update_channel_content(rhn, chanobj, verbose=False):
     """
@@ -184,7 +182,7 @@ def update_channel_content(rhn, chanobj, verbose=False):
 
     return add_channel_content(rhn, chanobj, verbose=False)
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 if __name__ == '__main__':
     
@@ -212,7 +210,7 @@ if __name__ == '__main__':
 
         else:
             sourcechannel, destchannel = args
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
         if sourcechannel not in existing_labels:
             print "Source channel label %s does not appear to exist on your satellite." % sourcechannel
