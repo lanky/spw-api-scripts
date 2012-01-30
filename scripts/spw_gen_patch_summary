@@ -1,12 +1,37 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# RHN/Spacewalk API script
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 # template API script using the rhnapi python module
 # the module will need to be on your PYTHONPATH
 # or its parent directory added using sys.path.append
+#
+# ------------------------------- end licence -------------------------------- #
+#
+# This script requires the python-rhnapi module
+
+
 __doc__ = """Designed to produce a list of unsynced errata from a source channel
 since the given start date (defaults to the first of the current calendar month)
 and produce a CVS output from them
 Can read channel mappings from a JSON-format config file like this:
-(only the section for 'lgb-3.0' is shown
+(only a single channel section shown below)
 {
     "clone-rhel5": {
         "source": "rhel-x86_64-server-5", 
@@ -26,11 +51,10 @@ Can read channel mappings from a JSON-format config file like this:
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
 
-# standard library imports
+# ------------------------- standard library imports ------------------------- #
 import sys
 import os
 from optparse import OptionParser, OptionGroup
-from ConfigParser import SafeConfigParser
 import time
 import csv
 
@@ -39,27 +63,32 @@ try:
 except ImportError:
     import simplejson as json
 
-
-
-# custom module imports
+# -------------------------- custom module imports --------------------------- #
+# while debugging the new rhnapi module
+sys.path.insert(0, '/home/ssears/scripts/newscripts/python-rhnapi')
 import rhnapi
 from rhnapi import channel
+from rhnapi import errata
+from rhnapi import utils
 
-# configuration variables. Probably okay, actually.
+# ------------------------- configuration variables. ------------------------- #
+# the defaults are probably okay, actually.
 RHNCONFIG = '~/.rhninfo'
 RHNHOST = 'localhost'
+
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
 CHANNELMAPS = [ os.path.expanduser('~/.rhn-channels.conf'), '/etc/sysconfig/rhn-channels.conf' ]
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
     """
-    preamble = "Generate a CVS list of unsynced errata for a given channel since the given date"
+    preamble = "Generate a CSV list of unsynced errata for a given channel since the given date"
     usagestr = "%prog [RHNOPTS]"
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
@@ -84,8 +113,13 @@ def parse_cmdline(argv):
     changrp.add_option("-s", "--source", help = "Source channel (where CHANNEL was cloned from")
     changrp.add_option("-d", "--date", help = "Only summarise errata released after this date")
     changrp.add_option("-o", "--output", help = "Output File for results")
-    changrp.add_option("-m", "--channel-mapping", help = "INI-style file for grouping/mapping source and cloned channels", default = None)
-    changrp.add_option("-g", "--group", help = "Channel group (from INI file) to summarise")
+    changrp.add_option("-m", "--channel-mapping",
+        help = "JSON-format file grouping/mapping source and cloned channels", default = None)
+    changrp.add_option("-g", "--group", help = "Channel group (from mapping file) to summarise")
+    changrp.add_option("-l", "--list", action = "store_true", default = False,
+        help = "display a list of channel mappings from the configuration file")
+    changrp.add_option("-i", "--info", action = "store_true", default = False,
+        help = "display clone info about the chosen group and exit")
     parser.add_option_group(changrp)
 
     if len(argv) == 0:
@@ -94,6 +128,16 @@ def parse_cmdline(argv):
 
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
+    # convert to a list for use with SafeConfigParser
+    if opts.channel_mapping is not None:
+        opts.channel_mapping = [ opts.channel_mapping ]
+    else:
+        opts.channel_mapping = CHANNELMAPS
+
+    # if asked for a list of channel groups, no other args are required
+    if opts.list:
+        return opts, args
+        
     if not opts.group:
         if not opts.channel:
             print "You must provide a channel to summarise"
@@ -105,12 +149,6 @@ def parse_cmdline(argv):
             parser.print_help()
             sys.exit(2)
 
-    # convert to a list for use with SafeConfigParser
-    if opts.channel_mapping:
-        opts.channel_mapping = [ opts.channel_mapping ]
-    else:
-        opts.channel_mapping = CHANNELMAPS
-
     if not opts.output:
         print "no output file provided, using stdout"
         opts.output = sys.stdout
@@ -118,18 +156,15 @@ def parse_cmdline(argv):
     # finally...
     return opts, args
 
+# ---------------------------------------------------------------------------- #
+
 def write_csv(data, filename, logger):
     """
     moved out of the main function for portability
     """
+    # fields = ['advisory', 'synopsis', 'issue_date', 'last_modified_date', 'urgency' , 'channel', 'description']
     fields = ['advisory', 'synopsis', 'issue_date', 'last_modified_date', 'urgency' , 'channel']
     try:
-        if filename != sys.stdout:
-            fd = open(filename, 'w')
-        else:
-            fd = filename
-        mywriter = csv.DictWriter(fd, fieldnames = fields, extrasaction = 'ignore')
-        fd.write("%s\n" % ','.join(fields))
         for row in data:
             syn = row['synopsis'].split(':')
             if len(syn) == 2:
@@ -137,17 +172,18 @@ def write_csv(data, filename, logger):
             else:
                 urg = 'None'
             row['urgency'] = urg
-            mywriter.writerow(row)
 
-        if fd != sys.stdout:
-            fd.close()
-            logger.info("wrote %d lines to %s" %(len(data), filename))
-        return True            
+        mywriter = utils.csvReport(data, filename, fields = fields)
+        logger.info("wrote %d lines to %s" %(len(data), str(filename)))
+        return mywriter
         
-    except:
+    except Exception, E:
+        logger.warn("An Exception Occurred: %s" % E.__str__())
         logger.critical("ERROR: could not write to file %s" % filename)
         return False
         
+# ---------------------------------------------------------------------------- #
+
 def diff_errata(rhn, chanlabel, source, date):
     """
     returns a dict of errata since the given date that have not been
@@ -170,7 +206,38 @@ def diff_errata(rhn, chanlabel, source, date):
 
     return results
 
+# ---------------------------------------------------------------------------- #
 
+def dump_group(channelmap, groupname):
+    """
+    Just dumps information about an individual group from the mapping file
+    """
+    data = channelmap.get(groupname, None)
+    if data is not None:
+        print "Group : '%s'" % groupname
+        print "Channel Label (Clone Source)"
+        print "%(chan)s (%(source)s)" % data
+        for c in data.get('children', []):
+            print "  - %(chan)s (%(source)s)" % c
+        print "-------------------------------"        
+
+
+# ---------------------------------------------------------------------------- #
+
+def dump_mappings(channelmaps, groupname=None):
+    """
+    Dump the list of channel mappings and groups to stdout
+
+    parameters:
+    channelmaps(dict)       - channel mapping dictionary (probably loaded from
+                              JSON)
+    """
+    print "Channel Groups defined in mapping file"
+    print "-------------------------------"        
+    for group in sorted(channelmaps):
+        dump_group(channelmaps, group)
+
+# ---------------------------------------------------------------------------- #
 
 
 def main():
@@ -180,11 +247,14 @@ def main():
     # timestamp for use in filenames (logs, mostly)
     tstamp = time.strftime("%Y-%m-%d.%H%M%S")
 
+    # process command line options and arguments
     opts, args = parse_cmdline(sys.argv[1:])
-    
 
-    # this will always have a value
+    # Default value for sanity
     channelmaps = None
+
+    # find the appropriate channel mapping file
+    # process each listed file until one works
     for c in opts.channel_mapping:
         if os.path.isfile(c) and os.access(c, os.R_OK):
             try:
@@ -193,10 +263,21 @@ def main():
             except:
                 continue
 
-    # if we read stuff in from a file:
     if channelmaps is not None:
+    # we've successfully parsed the channel mapping JSON file
+    # so if we've been asked for a grouplist, do that and exit
+        if opts.list:
+            dump_mappings(channelmaps)
+            sys.exit(0)
+
         if opts.group:
             channelinfo = channelmaps.get(opts.group, {})
+            if opts.info:
+                print "Details for channel grouping %s" % opts.group
+                print "-------------------------------"
+                dump_group(channelmaps, opts.group)
+                sys.exit(0)
+
     else:
         # if not, use the command-line options provided
         channelinfo = {
@@ -204,9 +285,13 @@ def main():
                         'source'   : opts.source,
                         'children' : [] }
 
+    # otherwise, process the groups selected
+    # ---------------------------------------------------------------------------- #
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
-        RHN.addLogger("patch-review", "/tmp/patch-review-%s" % tstamp)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN.addLogger("patch-review", "/tmp/patch-review.log" )
+        if opts.group:
+            RHN.logInfo("processing group %s" % opts.group)
         # collect errata from cloned channel
         if opts.date:
             monthstart = "%s 00:00:00" % opts.date
@@ -224,6 +309,11 @@ def main():
             kerr = diff_errata(RHN, k['chan'], k['source'], monthstart)
             if len(kerr) > 0:
                 results += kerr
+        for err in results:
+            errdata = errata.getDetails(RHN, err['advisory'])
+            err['description'] = errdata['description']
+            if opts.debug:
+                RHN.logInfo(err)
 
         # now we need to write a CSV file, use cvs.DictWriter, it'll be easier :)
         if write_csv(results, opts.output, RHN.logger):
