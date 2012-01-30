@@ -184,7 +184,7 @@ if __name__ == '__main__':
 
     try:
         # initialise an RHN Session
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
         # handle debugging requests
         if opts.debug:
             RHN.enableDebug()

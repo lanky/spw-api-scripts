@@ -512,7 +512,7 @@ if __name__ == '__main__':
         # -- connect to RHN Satellite Server --- #
         if opts.verbose:
             print "Connecting to satellite server %s" % opts.server
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
         if opts.debug:
             RHN.enableDebug()
         if opts.verbose:

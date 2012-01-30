@@ -293,7 +293,7 @@ if __name__ == '__main__':
         global existing_configchannels
 
         # now we populate them
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, cache_creds=opts.cache, debug = opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug = opts.debug)
         if verbose: print "Enumerating existing keys"
         # this is a list of tuples - ( description, key )
         existing_keys = activationkey.listActivationKeyNames(RHN)
