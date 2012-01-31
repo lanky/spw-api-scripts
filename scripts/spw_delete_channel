@@ -21,7 +21,7 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
-"""
+__doc__ = """
 spw_delete_channel
 
 RHN XMLRPC API script to delete a chosen channel or channels
@@ -30,20 +30,34 @@ requires the rhnapi python module (python-rhnapi)
 """
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
+# --------------------- Python Standard library Modules ---------------------- #
 import sys
+import os
 from optparse import OptionParser, OptionGroup
+from operator import itemgetter
+import re
 
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import channel
 from rhnapi import utils
 
+# --------------------------- Script Configuration --------------------------- #
+
+# for matching Red Hat provided channels
+rhpattern = re.compile(r'^rhn|rhel')
+
+# host and config file locations
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
+
+# authentication info.
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -53,9 +67,10 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+            help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+            help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False, help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -65,11 +80,14 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
     changrp = OptionGroup(parser, "Channel Options")
-    changrp.add_option("-r", "--recursive", help = "delete channel(s) recursively, removing all children (dangerous)", action = "store_true", default=False)
+    changrp.add_option("-r", "--recursive",action = "store_true", default=False,
+        help = "delete channel(s) recursively, removing all children (dangerous)")
     changrp.add_option("--list", action = "store_true", default = False,
             help = "just list custom channels (you can't delete any others) and exit")
     parser.add_option_group(changrp)
@@ -90,29 +108,70 @@ def parse_cmdline(argv):
     # finally...
     return opts, args
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
+def generate_chanlist(rhn):
+    """
+    Generates a list of all custom channels visible to the logged-in user, structured as follows:
+
+    { 'base' : base-channel-label,
+      'children' : [ childchan1, childchan2, childchan3 ] }
+    s a list of detailed channel info dicts
+
+    Returns a tuple of this and detailed channel information
+    """
+    # get a fully detailed list of channel information for custom channels
+    chanlist = channel.listMyChannels(rhn)
+    for c in chanlist:
+        chaninfo = channel.getDetails(rhn, c['label'])
+        c.update(chaninfo)
+    
+    # now we pull out base channels and create a 
+    results = {}
+    basechans = [ x['label'] for x in chanlist if len(x['parent_channel_label']) == 0 ]
+    for b in basechans:
+        if rhpattern.match(b):
+            baselabel = "** %s" % b
+        else:
+            baselabel = b
+        results[baselabel] = [ x['label'] for x in chanlist if x['parent_channel_label'] == b ]
+
+    return results, chanlist
+
+# ---------------------------------------------------------------------------- #
 
 if __name__ == '__main__':
     
     opts, chanlist = parse_cmdline(sys.argv)
     try:
         # login to our satellite
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0])
+                                )
         # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
 
+        # this should be collated to start with, as it may be used more than once
+        RHN.logInfo("getting a list of all custom channels on your satellite")
+        changroups, chaninfo = generate_chanlist(RHN)
+        existing_channels = [ x['label'] for x in chaninfo ]
+
         if opts.list:
             print "Custom Software Channels"
+            print "** = Red Hat Channel (can't be deleted)"
             print "========================"
-            mychans = [ x['label'] for x in channel.listMyChannels(RHN) ]
-            for chan in mychans:
-                print chan
-                if channel.hasChildren(RHN, chan):
-                    for child in channel.listChildren(RHN, chan):
-                        print '  %(label)s'  % child
-                        mychans.remove(child['label'])
+            for base, children in changroups.iteritems():
+                print base
+                for child in sorted(children):
+                    print "  %s" % child
+                print "---"                    
             sys.exit(0)
 
 
@@ -123,29 +182,49 @@ if __name__ == '__main__':
             if chan not in existing_channels:
                 print "channel label %s does not exist. Skipping it." % chan
                 continue
+            else:
+                # is this a base channel?
+                childchans = changroups.get(chan, None)
+                if childchans is not None:
+                    # does it have any child channels?
+                    childfail = False
+                    if len(childchans) > 0:
+                        # are we in recursive mode?
+                        if opts.recursive:
+                            for child in childchans:
+                                RHN.logInfo("deleting child channel %s" % child)
+                                if channel.delete(RHN, child):
+                                    RHN.logInfo("Successfully delete channel %s" % child)
+                                else:
+                                    RHN.logError("Failed to delete channel %s" % child)
+                                    childfail = True
+                                    continue
+                            if childfail:
+                                RHN.logError("failed to delete one or more child channels of %s. See logs for details" % chan)
+                                sys.exit(2)
+                            else:
+                                RHN.logInfo("Child channels successfully removed, deleting base channel")
+                                if channel.delete(RHN, chan):
+                                    RHN.logInfo("Deleted channel %s" % chan)
+                                else:
+                                    RHN.logError("Failed to delete channel %s" % chan)
+                        else:
+                            RHN.logError("Channel %s has child channels. Please delete them first or specify recursive mode" % chan)
+                            continue
+                    else:                                    
+                        # base channel with no child channels
+                        if channel.delete(RHN, chan):
+                            RHN.logInfo("Deleted channel %s" % chan)
+                        else:
+                            RHN.logError("Failed to delete chan %s" % chan)
 
-            if channel.hasChildren(RHN, chan):
-                child_chans = channel.listChildChannels(RHN, chan)
-                if opts.recursive:
-                    for child in child_chans:
-                        if opts.verbose:
-                            print "deleting child channel %s" % child
-                        if channel.delete(RHN, child):
-                           print "deleted child channel %s" % child
                 else:
-                    print 'channel %s has child channels. please delete them first or use the -r/--recursive option' % chan
-                    print 'children:'
-                    print '\n'.join( child_chans)
-                    sys.exit(2)
-            
-            if channel.delete(RHN, chan):
-                print "deleted channel %s" % chan
+                    # this is a child channel. just try and delete it
+                    if channel.delete(RHN, chan):
+                        RHN.logInfo("Deleted channel %s" % chan)
+                    else:
+                        RHN.logError("Failed to delete chan %s" % chan)
 
     except KeyboardInterrupt:
         print "operation cancelled"
         sys.exit(1)
-
-
-    
-    
-    
