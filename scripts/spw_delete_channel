@@ -148,7 +148,7 @@ if __name__ == '__main__':
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = not(opts.quiet),
-                                logname = os.path.basename(sys.argv[0])
+                                logname = os.path.basename(sys.argv[0]), loglevel=30,
                                 )
         # did we give the --debug switch?
         if opts.verbose:
@@ -226,5 +226,5 @@ if __name__ == '__main__':
                         RHN.logError("Failed to delete chan %s" % chan)
 
     except KeyboardInterrupt:
-        print "operation cancelled"
+        print "operation cancelled by keystroke."
         sys.exit(1)
