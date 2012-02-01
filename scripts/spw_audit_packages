@@ -31,7 +31,7 @@ Needs a base channel label to work with.
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
 
-# standard library imports
+# --------------------- Python Standard Library Modules ---------------------- #
 import sys
 import os
 from optparse import OptionParser, OptionGroup
@@ -42,16 +42,20 @@ from pprint import pprint
 # for reporting
 import csv
 
-# custom module imports
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import channel, system, packages, utils
 
 # for progress display:
 from progressbar import Counter,Percentage,ProgressBar,Timer,Bar
 
-# configuration variables. Probably okay, actually.
+# --------------------------- Script Configuration --------------------------- #
+
+# host and config file locations
 RHNCONFIG = '~/.rhninfo'
 RHNHOST = 'localhost'
+
+# authentication info
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
@@ -77,6 +81,7 @@ Needs a base channel label to work with.
             help = "increase verbosity")
     parser.add_option("--progress", action = "store_true", default = False,
         help = "display progressbars")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False, help = "Disable all logging and output")
     parser.add_option("-o","--output", help = "output file for summary info in CSV format")        
 
     # RHN Satellite options group
@@ -88,6 +93,8 @@ Needs a base channel label to work with.
     rhngrp.add_option("--logfile", help = "Spool messages to this logfile [stdout]", default = None)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
 
@@ -107,48 +114,6 @@ Needs a base channel label to work with.
 
     # finally...
     return opts, args[0]
-
-# --------------------------------------------------------------------------------- #
-        
-def setup_logger(logfile, verbose = False):
-    """
-    Configures logging, returns a logger object
-    """
-    broken_log = False
-
-    # set up logging
-    logger = logging.getLogger(os.path.basename(sys.argv[0]))
-    logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    if logfile is None:
-        ch = logging.StreamHandler()
-        ch.setFormatter(formatter)
-        ch.setLevel(logging.INFO)
-        logger.addHandler(ch)
-    else:
-        try:
-            lf = logging.FileHandler(os.path.expanduser(logfile))
-        except IOError:
-            lf = logging.StreamHandler()
-            broken_log = True
-            
-        lf.setFormatter(formatter)
-        lf.setLevel(logging.DEBUG)
-        logger.addHandler(lf)
-
-
-    # if we increase verbosity and aren't already using a streamhandler to stdout...
-    if verbose and isinstance(logger.handlers[0], logging.FileHandler):
-        # we also dump data to stdout (info and above only)
-        stdout = logging.StreamHandler()
-        stdout.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-        stdout.setLevel(logging.INFO)
-        logger.addHandler(stdout)
-
-    if broken_log:
-        logger.error("Cannot open logfile %s. Falling back to standard output" % opts.logfile)
-
-    return logger        
 
 # --------------------------------------------------------------------------------- #
 
@@ -220,6 +185,8 @@ def latest_pkg(pkg1, pkg2):
     else:
         return None
 
+# ---------------------------------------------------------------------------- #
+
 def get_newest_pkg(pkglist, logger = None):
     """
     work through a list of package objects and return the latest version.
@@ -238,7 +205,7 @@ def get_newest_pkg(pkglist, logger = None):
 def compare_pkgs(system_list, channel_pkgs, logger = None):
     """
     parse the list of package diffs
-    each system in the system_list has a 'pkgdif' entry, containing 
+    each system in the system_list has a 'pkgdiff' entry, containing 
     """
     # index by name to find packages 
     chan_names = [ p['name'] for p in channel_pkgs ]
@@ -290,71 +257,84 @@ if __name__ == '__main__':
     # process commandline arguments 
     opts, chanlabel = parse_cmdline(sys.argv[1:])
 
-    # get a logger instance
-    logger = setup_logger(opts.logfile, opts.verbose)
-
     # initialise an RHN Session
     try:
-        logger.info("connecting to RHN Server %s as user %s" %(opts.server, opts.login))
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=30,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+        # this should be collated to start with, as it may be used more than once
+        RHN.logInfo("getting a list of all custom channels on your satellite")
+
         satversion = float(RHN.sat_version[0:3])
 
         # handle debugging requests
         if opts.debug:
             RHN.enableDebug()
-            logger.debug("enabling debug for RHN Session id %s" % RHN.key)
 
         # get a list of existing base channels
         basechannels = channel.listBaseChannels(RHN)
         if chanlabel not in basechannels:
-            logger.error("channel label %s is not an existing base channel on your satellite" % chanlabel)
+            RHN.logerror("channel label %s is not an existing base channel on your satellite" % chanlabel)
 
         else:
             # collate a list of child channels for the given base
+            # this script may not actually work on satellite versions < 5.4. This is untested.
             if satversion < 5.4:
-                logger.info("Satellite Version is %f. Doing things the hard way" % satversion)
+                RHN.logInfo("Satellite Version is %f. Doing things the hard way" % satversion)
                 allchannels = [ channel.detailsByLabel(RHN, x['label']) for x in channel.listAllChannels(RHN) ]
                 childchans = [ x['label'] for x in allchannels if x['parent_channel_label'] == chanlabel ]
             else:
                 childchans = channel.listChildChannels(RHN, chanlabel)
 
-            logger.info("Getting a list of the newest packages available in base channel %s" % chanlabel)
+            RHN.logInfo("Getting a list of the newest packages available in base channel %s" % chanlabel)
             channelpkgs = channel.listLatestPackages(RHN, chanlabel)
-            logger.debug("Retrieved list of %d packages" % len(channelpkgs))
-            logger.info("Getting lists of newest packages in child channels")
+            RHN.logInfo("Getting lists of newest packages in child channels")
             for chan in childchans:
-                logger.info("Processing %s" % chan)
+                RHN.logInfo("Processing %s" % chan)
                 childpkgs = channel.listLatestPackages(RHN, chan)
-                logger.info("Adding %d packages" % len(childpkgs))
+                RHN.logInfo("Adding %d packages" % len(childpkgs))
                 channelpkgs += childpkgs
 
-            logger.info("indexing package list")
-            channelpkgs = index_pkgs(channelpkgs, logger, opts.verbose, False)
+            RHN.logInfo("indexing package list")
+            channelpkgs = index_pkgs(channelpkgs, RHN.logger, opts.verbose, False)
             chanidx = set([p['nvrea'].strip() for p in channelpkgs])
             
             # list of subscribed systems in this format:
-            logger.info("Getting a list of systems subscribed to base channel %s" % chanlabel)
+            RHN.logInfo("Getting a list of systems subscribed to base channel %s" % chanlabel)
             systemlist = channel.listSubscribedSystems(RHN, chanlabel)
 
             if opts.progress:
                 widgets = [ 'Systems [', Counter(), '/ %d]' % len(systemlist), Bar(), Timer() ]
                 pbar = ProgressBar(maxval=len(systemlist), widgets = widgets).start()
             for box in systemlist:
-                logger.info("listing packages installed on system %(name)s [%(id)d]" % box)
+                RHN.logInfo("listing packages installed on system %(name)s [%(id)d]" % box)
                 # fold channel information into our system object:
                 box['basechannel'] = system.getSubscribedBaseChannel(RHN, box['id']).get('label')
                 box['childchannels'] = ','.join([ x['label'] for x in system.listSubscribedChildChannels(RHN, box['id']) ])
                 # list the installed RPM packages from the system record
                 syspkgs = system.listPackages(RHN, box['id'])
                 # add nvrea tags to each package object
-                syspkgs = index_pkgs(syspkgs, logger, opts.verbose, False)
+                syspkgs = index_pkgs(syspkgs, RHN.logger, opts.verbose, False)
                 # ensure there are no duplicates (which there should not be)
                 sysidx = set([p['nvrea'].strip() for p in syspkgs])
                 # add the package list to our system object
                 box['packages'] = syspkgs
                 # add the nvrea list of differences (here: packages on system that are not in the channels)
                 box['pkgdiff'] = [ p for p in syspkgs if p['nvrea'] in  sysidx.difference(chanidx) ]
-                box['last_checkin'] = RHN.decodeDate(box['last_checkin'])
+                try:
+                    box['last_checkin'] = RHN.decodeDate(box['last_checkin'])
+                except:
+                    box['last_checkin'] = RHN.decodeDate(system.getLastCheckin(RHN, box['id']))
 
                 if opts.progress:
                     pbar.update(systemlist.index(box) + 1 )
@@ -365,7 +345,7 @@ if __name__ == '__main__':
             # at this stage our systemlist contains, in each system entry
             # - a full list of installed RPM packages, with nvrea tags
             # - a list of nvrea 
-            compare_pkgs(systemlist, channelpkgs, logger)
+            compare_pkgs(systemlist, channelpkgs, RHN.logger)
             if opts.output:
                 utils.csvReport(systemlist, opts.output, fields = ['name', 'id', 'missing', 'newer', 'older', 'basechannel', 'childchannels', 'last_checkin'])
 
