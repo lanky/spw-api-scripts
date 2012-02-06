@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # RHN/Spacewalk XMLRPC API script
-# requires the python-rhnapi
+# requires the python-rhnapi module
 # and python-progressbar modules
 #
-#    Copyright 2009-2011 Stuart Sears / Steven Hardy
+#    Copyright 2009-2012 Steven Hardy / Stuart Sears
 #
 #    This file is part of spw-api-scripts
 #
@@ -34,27 +34,28 @@ a script to change/list channel org access
 
 This requires the presence of the 'rhnapi' module on your PYTHONPATH.
 """
-
+# ---------------------- Python Standard Libary Modules ---------------------- #
 import sys
+import os
 from optparse import OptionParser, OptionGroup
 import logging
 import re
 
-# custom module imports
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import org
 from rhnapi import channel
 from rhnapi import utils
-from datetime import time
-import time
 
+# --------------------------- Script Configuration --------------------------- #
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -67,6 +68,7 @@ def parse_cmdline(argv):
             help = "enable debug output for RHN session (XMLRPC errors etc")
     parser.add_option("-v", "--verbose", action = "store_true", default = False,
             help = "enable extra informational output")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False, help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -76,6 +78,8 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("-C", "--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     changrp = OptionGroup(parser, "Channel Options")
@@ -104,30 +108,33 @@ if __name__ == '__main__':
 
     # Parse command line args and set loglevel
     opts, args = parse_cmdline(sys.argv)
-    if opts.debug:
-        print "Setting loglevel to DEBUG"
-        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
-        opts.verbose=True
-        logging.debug("Debug level logging enabled")
-    elif opts.verbose:
-        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
-    else:
-        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.WARNING)
-
-    logging.debug("Got channel %s org %s" % (opts.channel, opts.org))
 
     try:
-        # initialiase an RHN Session
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        # initialiase an RHN Session with loglevel set to WARNING (30)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0], loglevel=30)
+                                )
+        # --verbose ?
+        # sets logging to INFO level
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # did we give the --debug switch?
+        # sets logging to DEBUG level
         if opts.debug:
             RHN.enableDebug()
 
+        RHN.logDebug("Got channel %s org %s" % (opts.channel, opts.org))
+
         # Ensure the requested channel label exists
         channels = [ x['label'] for x in channel.listSoftwareChannels(RHN) ]
+
         if opts.channel not in channels:
-            logging.error("source channel %s does not exist. Please try again" % opts.channel)
-            logging.error("The following channels exist on your satellite:")
-            logging.error('\n'.join(channels))
+            RHN.logError("source channel %s does not exist. Please try again" % opts.channel)
+            RHN.logError("The following channels exist on your satellite:")
+            RHN.logError('\n'.join(channels))
             sys.exit(1)
 
         # If they just asked for --list, we get channel org access and exit
@@ -142,10 +149,10 @@ if __name__ == '__main__':
             # Ensure the requested org exists, and get the ID
             org_details = org.getDetails(RHN, opts.org)
             if org_details:
-                logging.debug("Found requested org %s, ID is %d", (opts.org, org_details['id']))
+                RHN.logDebug("Found requested org %s, ID is %d", (opts.org, org_details['id']))
             else:
-                logging.error("Couldn't find org matching name %s!", opts.org)
-                logging.error("The following orgs exist on your satellite:")
+                RHN.logError("Couldn't find org matching name %s!", opts.org)
+                RHN.logError("The following orgs exist on your satellite:")
                 orgs = org.listOrgs(RHN)
                 orgnames = [ x['name'] for x in orgs ]
                 print '\n'.join(orgnames)
@@ -162,12 +169,12 @@ if __name__ == '__main__':
             elif opts.disable:
                 channel.setOrgSharing(RHN, opts.channel, 'private')
             else:
-                logging.error("Unexpected error, channel specified with no enable/disable switch!")
+                RHN.logError("Unexpected error, channel specified with no enable/disable switch!")
                 sys.exit(1)
             
 
 
     except KeyboardInterrupt:
-        logging.debug("operation cancelled")
+        print "operation cancelled by keystroke."
         sys.exit(1)
 
