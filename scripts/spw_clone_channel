@@ -22,7 +22,7 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 
-"""
+__doc__ = """
 spw_clone_channel
 
 A script to clone a channel in your RHN Satellite, with or without errata.
@@ -31,31 +31,37 @@ Can recursively clone channels with all their children
 This requires the presence of the 'rhnapi' module on your PYTHONPATH.
 """
 
+__author__ = "Stuart Sears / Steven Hardy"
+
+# --------------------- Python Standard Library Modules ---------------------- #
 import sys
 from optparse import OptionParser, OptionGroup
 import logging
 import re
 
-# custom module imports
+import time
+
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import channel
 from rhnapi import utils
-from datetime import time
-import time
 
+
+# ---------------------- Script Configuration Settings ----------------------- #
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
     """
-    preamble = "Clone a channel in your RHN Satellite. "
-    usagestr = "%prog [OPTIONS] [-p PARENT] -c SOURCECHANNEL -d DESTCHANNEL"
+    preamble = "Clone a channel in your RHN Satellite. Supports recursion."
+    usagestr = "%prog [OPTIONS] [-p PARENT] -c SOURCECHANNEL [ -d DESTCHANNEL ]"
     # intitialise our parser instance and set some core options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("-V", "--debug", action = "store_true", default = False,
@@ -71,11 +77,12 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("-C", "--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", help = "Logfile for output", default = None)
     parser.add_option_group(rhngrp)
 
     changrp = OptionGroup(parser, "Channel Options")
     changrp.add_option("-c","--source-channel", dest = "source", help = "source channel LABEL", default=None)
-    changrp.add_option("-r", "--child", help = "clone recursively, e.g a channel and all it's children", action = "store_true", default=False)
+    changrp.add_option("-r", "--recursive", help = "clone recursively, e.g a channel and all its children", action = "store_true", default=False)
     changrp.add_option("-d","--dest-channel", dest = "dest", help = "destination channel LABEL, note this is used as a prefix to existing labels when cloning recursively using -r/--child", default=None)
     changrp.add_option("-n","--no-errata", help="do not clone errata [%default]", action="store_true", default=False)
     changrp.add_option("-p","--parent", help="parent for new channel. Your new channel will be a base channel without this.", default=None)
@@ -104,21 +111,7 @@ def parse_cmdline(argv):
 
     return opts, args
 
-# --------------------------------------------------------------------------------- #
-def user_ask_ok(prompt):
-    retries=4
-    while True:
-        ok = str(raw_input(prompt)).lower()
-        if ok in ('y', 'yes'):
-            return True
-        if ok in ('n', 'no'):
-            return False
-        retries = retries - 1
-        if retries < 0:
-            raise IOError('refused by user')
-        print "Please enter yes/y or n/no"
-
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def label_to_name(label):
     """
@@ -138,28 +131,23 @@ def label_to_name(label):
             output.append(word.capitalize())
     return ' '.join(output)
 
+# ---------------------------------------------------------------------------- #
 
-if __name__ == '__main__':
-
+def main():    
+    """
+    main script functionality
+    """
     # Parse command line args and set loglevel
-    opts, args = parse_cmdline(sys.argv)
-    if opts.debug:
-        print "Setting loglevel to DEBUG"
-        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
-        opts.verbose=True
-        logging.debug("Debug level logging enabled")
-    elif opts.verbose:
-        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
-    else:
-        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.WARNING)
-
-    logging.debug("Got dest channel %s" % opts.dest)
-
+    opts, args = parse_cmdline(sys.argv[1:])
     # initialiase an RHN Session
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug, logfile = opts.log)
         if opts.debug:
             RHN.enableDebug()
+            RHN.logDebug("Debug logging enabled")
+        elif opts.verbose:
+            RHN.enableVerbose()
+            RHN.logInfo("Verbose mode enabled")
 
         channels = [ x['label'] for x in channel.listSoftwareChannels(RHN) ]
         # existing_channels = [ x['label'] for x in  channellist ]
@@ -170,39 +158,39 @@ if __name__ == '__main__':
             if opts.interactive:
                 opts.src = utils.promptMissing('Source Channel label: ')
             else:
-                logging.error("source channel %s does not exist. Please try again" % opts.source)
-                logging.error("The following channels exist on your satellite:")
-                logging.error('\n'.join(channels))
+                RHN.logError("source channel %s does not exist. Please try again" % opts.source)
+                RHN.logError("The following channels exist on your satellite:")
+                RHN.logError('\n'.join(channels))
                 sys.exit(1)
 
         child_channels = []
-        if opts.child:
+        if opts.recursive:
             child_channels = channel.listChildChannels(RHN, opts.source)
             for child in child_channels:
                 if child not in channels:
-                    logging.error("child channel %s does not exist - should never get here!")
+                    RHN.logError("child channel %s does not exist - should never get here!")
                     sys.exit(1)
         source_channels = [ opts.source ] + child_channels
 
         # If the --child option is specified, we treat opts.dest as a prefix for all source channels
         dest_channels = []
-        if opts.child:
+        if opts.recursive:
             for c in source_channels:
                 if opts.dest:
-                    logging.debug("source channel %s - dest channel %s" % (c, "_".join([opts.dest, c])))
+                    RHN.logDebug("source channel %s - dest channel %s" % (c, "_".join([opts.dest, c])))
                     dest_channels += [ "_".join([opts.dest, c]) ]
                 elif opts.regex:
                     # Split the sed-style regex, expecting s/foo/bar
                     regex_split = opts.regex.split("/")
                     sedded_ch = c.replace(regex_split[1], regex_split[2])
-                    logging.debug("Sedded %s = %s" % (c, sedded_ch))
+                    RHN.logDebug("Sedded %s = %s" % (c, sedded_ch))
                     dest_channels += [ sedded_ch ]
                 else:
-                    logging.error("Error, shouldn't get here, no destination or regex specifed!")
+                    RHN.logError("Error, shouldn't get here, no destination or regex specifed!")
                     sys.exit(2)
         # Otherwise we take opts.dest to be the full destination name (original, pre --child behavior)
         elif opts.dest in channels:
-            logging.warning("Destination Channel label %s already exists. Please Choose an alternative" % opts.dest)
+            RHN.logWarn("Destination Channel label %s already exists. Please Choose an alternative" % opts.dest)
             if opts.interactive:
                dest_channels += [ utils.promptMissing('Destination Channel Label: ') ]
             else:
@@ -214,16 +202,16 @@ if __name__ == '__main__':
                 # Split the sed-style regex, expecting s/foo/bar
                 regex_split = opts.regex.split("/")
                 sedded_ch = c.replace(regex_split[1], regex_split[2])
-                logging.debug("Sedded %s = %s" % (c, sedded_ch))
+                RHN.logDebug("Sedded %s = %s" % (c, sedded_ch))
                 dest_channels += [ sedded_ch ]
             else:
-                logging.error("Error, shouldn't get here, no destination or regex specifed!")
+                RHN.logError("Error, shouldn't get here, no destination or regex specifed!")
                 sys.exit(2)
                   
 
         if opts.parent is not None and opts.parent not in parents:
-            logging.warning("Parent Channel is not an existing Base Channel. Please choose one of the following:")
-            logging.warning( '\n'.join(parents))
+            RHN.logWarn("Parent Channel is not an existing Base Channel. Please choose one of the following:")
+            RHN.logWarn( '\n'.join(parents))
             if opts.interactive:
                 opts.parent = utils.promptMissing('Parent Channel Label: ')
 
@@ -232,8 +220,8 @@ if __name__ == '__main__':
             print "You are about to perform the following channel clone operations:"
             for source,clone in zip(source_channels, dest_channels):
                 print "Clone %s ==> %s" % (source, clone)
-            if user_ask_ok("Confirm - Clone these channels (yes/no):") != True:
-                logging.warning("Clone cancelled by user, exiting")
+            if not utils.promptConfirm("Confirm - Clone these channels [Y|n]"):
+                RHN.logWarn("Clone cancelled by user, exiting")
                 sys.exit(1)
 
         # okay, we have the information I need, let's try...
@@ -242,7 +230,7 @@ if __name__ == '__main__':
             parent_channel = opts.parent
 
         for source,clone in zip(source_channels, dest_channels):
-            timestr = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+            timestr = time.strftime("%Y-%m-%d %H:%M:%S")
             summary="Clone of %s, created on %s" % (source, timestr)
             name=label_to_name(clone)
             kwargs = {'label' : clone, 'name': name, 'summary': summary }
@@ -253,29 +241,39 @@ if __name__ == '__main__':
             # since there appears to be no way to fix this up later via the API :(
             details = channel.detailsByLabel(RHN, source)
             if details['gpg_key_url']:
-                logging.debug("details gpg_key_url true == %s" % details['gpg_key_url'])
+                RHN.logDebug("details gpg_key_url true == %s" % details['gpg_key_url'])
                 kwargs['gpg_url'] = details['gpg_key_url']
             if details['gpg_key_id']:
-                logging.debug("details gpg_key_id true == %s" % details['gpg_key_id'])
+                RHN.logDebug("details gpg_key_id true == %s" % details['gpg_key_id'])
                 kwargs['gpg_id'] = details['gpg_key_id']
             if details['gpg_key_fp']:
-                logging.debug("details gpg_key_fp true == %s" % details['gpg_key_fp'])
+                RHN.logDebug("details gpg_key_fp true == %s" % details['gpg_key_fp'])
                 kwargs['gpg_fingerprint'] = details['gpg_key_fp']
 
             # Print what we are about to do and prompt for a yes/no confirmation if --confirm
-            logging.debug("cloning channel %s -> %s, name \"%s\", parent %s, summary\"%s\"" % (source, clone, name, parent_channel, summary))
+            RHN.logDebug("cloning channel %s -> %s, name \"%s\", parent %s, summary\"%s\"" % (source, clone, name, parent_channel, summary))
             if channel.cloneChannel(RHN, source, False, **kwargs):
                 logging.info("Successfully cloned %s as %s" %(source, clone))
             else:
-                logging.error("Error cloning %s as %s" %(source, clone))
+                RHN.logError("Error cloning %s as %s" %(source, clone))
 
             # If this is the first iteration in --child mode, 
             # we set the parent-channel to the first clone (base) channel
-            if source == source_channels[0] and opts.child:
-                logging.debug("First iteration in child mode, changing parent channel from %s to %s" % (parent_channel, clone))
+            if source == source_channels[0] and opts.recursive:
+                RHN.logDebug("First iteration in recursive mode, changing parent channel from %s to %s" % (parent_channel, clone))
                 parent_channel = clone
 
     except KeyboardInterrupt:
-        logging.debug("operation cancelled")
+        RHN.logDebug("operation cancelled")
         sys.exit(1)
 
+
+# ---------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    # if called directly (most likely the case), run the main() function
+    main()
+    
+# footer - do not edit below this    
+# vim modeline    
+# vim: set ts=4 sts=4 sw=4 et ai smartindent ft=python nu:
