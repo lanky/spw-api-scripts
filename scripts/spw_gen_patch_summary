@@ -33,20 +33,21 @@ and produce a CVS output from them
 Can read channel mappings from a JSON-format config file like this:
 (only a single channel section shown below)
 {
-    "clone-rhel5": {
-        "source": "rhel-x86_64-server-5", 
-        "chan": "clone-rhel-x86_64-server-5"
-        "children": [
+    "clone-rhel5"  : {
+        "errata"   : "ALL",
+        "source"   : "rhel-x86_64-server-5",
+        "chan"     : "clone-rhel-x86_64-server-5"
+        "children" : [
             {
-                "source": "rhel-x86_64-server-productivity-5", 
-                "chan": "clone-rhel-x86_64-server-productivity-5"
-            }, 
+                "source" : "rhel-x86_64-server-productivity-5",
+                "chan"   : "clone-rhel-x86_64-server-productivity-5"
+            },
             {
-                "source": "rhn-tools-rhel-x86_64-server-5", 
-                "chan": "clone-rhn-tools-rhel-x86_64-server-5"
+                "source" : "rhn-tools-rhel-x86_64-server-5",
+                "chan"   : "clone-rhn-tools-rhel-x86_64-server-5"
             }
         ]
-    }, 
+    },
 }
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
@@ -64,8 +65,6 @@ except ImportError:
     import simplejson as json
 
 # -------------------------- custom module imports --------------------------- #
-# while debugging the new rhnapi module
-sys.path.insert(0, '/home/ssears/scripts/newscripts/python-rhnapi')
 import rhnapi
 from rhnapi import channel
 from rhnapi import errata
@@ -250,46 +249,20 @@ def main():
     # process command line options and arguments
     opts, args = parse_cmdline(sys.argv[1:])
 
-    # Default value for sanity
-    channelmaps = None
-
-    # find the appropriate channel mapping file
-    # process each listed file until one works
-    for c in opts.channel_mapping:
-        if os.path.isfile(c) and os.access(c, os.R_OK):
-            try:
-                channelmaps = json.loads(open(c).read())
-                break
-            except:
-                continue
-
-    if channelmaps is not None:
-    # we've successfully parsed the channel mapping JSON file
-    # so if we've been asked for a grouplist, do that and exit
-        if opts.list:
-            dump_mappings(channelmaps)
-            sys.exit(0)
-
-        if opts.group:
-            channelinfo = channelmaps.get(opts.group, {})
-            if opts.info:
-                print "Details for channel grouping %s" % opts.group
-                print "-------------------------------"
-                dump_group(channelmaps, opts.group)
-                sys.exit(0)
-
-    else:
-        # if not, use the command-line options provided
-        channelinfo = {
-                        'chan'     : opts.channel,
-                        'source'   : opts.source,
-                        'children' : [] }
-
-    # otherwise, process the groups selected
     # ---------------------------------------------------------------------------- #
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
-        RHN.addLogger("patch-review", "/tmp/patch-review.log" )
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logname = os.path.basename(sys.argv[0]), loglevel=30,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
         if opts.group:
             RHN.logInfo("processing group %s" % opts.group)
         # collect errata from cloned channel
@@ -300,15 +273,61 @@ def main():
             monthstart = "%s-01 00:00:00" % time.strftime("%Y-%m")
             RHN.logInfo("No date provided, defaulting to the beginning of this month (%s)" % monthstart)
 
+        # Default value for sanity
+        channelmaps = None
+
+        # find the appropriate channel mapping file
+        # process each listed file until one works
+        for c in opts.channel_mapping:
+            channelmaps = utils.loadJSON(c)
+            if channelmaps is not None:
+                break
+
+
+#            if os.path.isfile(c) and os.access(c, os.R_OK):
+#                try:
+#                    channelmaps = json.loads(open(c).read())
+#                    break
+#                except:
+#                    continue
+
+        if channelmaps is not None:
+        # we've successfully parsed the channel mapping JSON file
+        # so if we've been asked for a grouplist, do that and exit
+            if opts.list:
+                dump_mappings(channelmaps)
+                sys.exit(0)
+
+            if opts.group:
+                channelinfo = channelmaps.get(opts.group, {})
+                if opts.info:
+                    print "Details for channel grouping %s" % opts.group
+                    print "-------------------------------"
+                    dump_group(channelmaps, opts.group)
+                    sys.exit(0)
+
+        else:
+            # if not, use the command-line options provided
+            channelinfo = {
+                            'chan'     : opts.channel,
+                            'source'   : opts.source,
+                            'children' : [] }
+
+        # otherwise, process the groups selected
         # now process our channels and their sources:
         # diff_errata(rhn, chanlabel, source, date)
         RHN.logInfo("processing Base Channel %s" % channelinfo['chan'])
+
         results = diff_errata(RHN, channelinfo['chan'], channelinfo['source'], monthstart)
+        
+        # process each child channel in turn
         for k in channelinfo.get('children', []):
             RHN.logInfo("processing child channel %s" % k['chan'])
             kerr = diff_errata(RHN, k['chan'], k['source'], monthstart)
             if len(kerr) > 0:
                 results += kerr
+        
+        # fetch details for 
         for err in results:
             errdata = errata.getDetails(RHN, err['advisory'])
             err['description'] = errdata['description']
