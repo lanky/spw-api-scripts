@@ -1,0 +1,284 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+__doc__ = """
+spw_list_channels.py
+pretty-prints a tree of channels in your RHN Satellite.
+"""
+
+__author__ = "Stuart Sears <sjs@redhat.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import sys
+import os
+import re
+from optparse import OptionParser, OptionGroup
+from operator import itemgetter
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+
+# --------------------------- Script Configuration --------------------------- #
+
+# host and config file (for auth) locations
+RHNHOST='localhost'
+RHNCONFIG='~/.rhninfo'
+
+# authentication info
+# put these in your configfile, dammit.
+RHNUSER=None
+RHNPASS=None
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    Deal with commandline arguments
+    """
+    preamble = """Print a tree of base and child channels to stdout.
+Can filter channels based on regex matching, or only list channels with subscribed systems.
+If you provide a regex that only matches child channels, their parent labels are still printed as placeholders.
+    """
+    usagestr = "%prog [RHNOPTS] [-cr] [-x REGEX]"
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+            help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+            help = "increase verbosity. Sets loglevel to INFO")
+    
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+            help = "Disable all non-critical logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options",
+                        "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server", default=RHNHOST, help="RHN satellite server hostname [%default]")
+    rhngrp.add_option("--login", default=RHNUSER, help="RHN login (username)")
+    
+    rhngrp.add_option("--pass", dest = "password", default=RHNPASS,
+        help="RHN password. This is better off in a config file.")
+    
+    rhngrp.add_option("--config", dest = "config", default=RHNCONFIG,
+        help="Local RHN configuration file [ %default ]")
+    
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options
+    changrp = OptionGroup(parser, "Software Channel Options")
+    changrp.add_option("-c","--custom", action = "store_true", default=False,
+        help="only display custom channels, not Red Hat ones.")
+
+    changrp.add_option("-r","--redhat", action = "store_true", default=False,
+        help="only display Red Hat channels (starting with 'rhel' or 'rhn')")
+    
+    changrp.add_option("-x","--regex", default=None,
+        help="show channels matching the given regular expression. Only matched against base channels." )
+    
+    changrp.add_option("-n", "--numbers", default = False, action = "store_true",
+        help = "Show number of subscribed systems alongside the labels.")
+    
+    changrp.add_option("-s", "--skip-unused", default = False, action = "store_true",
+        help = "do not display channels with no subscribed systems. Requires the -n/--numbers option")
+    
+    parser.add_option_group(changrp)
+
+    opts, args = parser.parse_args()
+
+    if opts.regex:
+        # ensure it's not encoded in some weird way?
+        opts.regex = opts.regex.decode('string_escape')
+
+    return parser.parse_args()
+        
+
+# ---------------------------------------------------------------------------- #
+
+def trim_channels(chanlist, logger):
+    """
+    removes all parent and or child channels with no subscribed systems
+    expects a list of dict, each a bit like this:
+    { 'label' : chanlabel,
+      'subs'  : (int) no of subscribed systems
+      'children' : [
+        { 'label' : ..., 'subs': .... (plus other info) },
+      ]
+    """
+    for chanobj in chanlist:
+        if len(chanobj['subs']) == 0:
+            logger.info("removing channel %(label)s as it has no subscribed systems")
+            chanlist.remove(chanobj)
+            continue
+        else:
+            for child in chanobj['children']:
+                if len(child['subs']) == 0:
+                    logger.info("removing child channel %(label)s as it has no subscribed systems")
+                    chanobj['children'].remove(child)
+                
+
+    return chanlist
+
+def merge_channels(chanlist, logger, regex = None, skipunused = False):
+    """
+    converts list of channel dict into recursive dict of base/child channels
+    optionally skipping channels with no subscribed systems.
+    Process:
+    1. (if skipunused), drop all channels with no subs
+    2. find (all) channels matching regex and extract them
+    3. find child channels and add them to the 'base' channel dict
+
+    returns:
+    dict, with this structure:
+    { 'basechannel label' : { 'label' :..., 'usage' :..., 'subs': ...,
+                              'children' : [
+                              {childchan info, plus 'usage' and 'subs'}
+                              ]
+
+    """
+    # debuggery:
+    logger.info("-------------- processing channels ------------")
+    
+    if regex is not None:
+        logger.info("processing regular expression '%s'" % str(regex))
+        chanpatt = re.compile(r'%s' % str(regex))
+    else:
+        chanpatt = re.compile(r'.*', re.I)
+    results = {}
+    for chan in chanlist:
+        chan['usage'] = len(chan['subs'])
+        if not chanpatt.search(chan['label']):
+            logger.debug("skipping channel %(label)s, matched by regex" % chan)
+            continue
+        elif skipunused and chan['usage'] == 0:
+            logger.debug("skipping channel %(label)s - no subscribed systems" % chan)
+            continue
+        else:
+            myparent = chan.get('parent_channel_label').strip()
+            if len(myparent) == 0:
+                # This is a base channel
+                logger.debug("%(label)s is a base channel" % chan)
+                if results.get(chan['label'], False):
+                    # is there already an entry for it? (created by a child, probably)
+                    # update it with any missing info:
+                    results[chan['label']].update(chan)
+                else:
+                    # create the entry
+                    chan['children'] = []
+                    results[chan['label']] = chan
+            else:                
+                # this is a child channel, does the parent already exist?
+                logger.debug("%(label)s is a child of %(parent_channel_label)s" % chan)
+                parentobj = results.get(myparent, None)
+                if parentobj is not None:
+                    # there is already a key for my parent channel
+                    # let's update the child list
+                    childlist = parentobj.get('children', [])
+                    childlist.append(chan)
+                    parentobj['children'] = childlist
+                else:
+                    parentobj = { 'children' : [ chan ] , 'label' : myparent, 'usage' : 0}
+
+                results[myparent] = parentobj
+
+    return results
+        
+# --------------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    
+    opts, args = parse_cmdline(sys.argv)
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        # connect to the satellite
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+        # check for customizations
+        if opts.redhat:
+            # using the new regex matching in listBaseChannels
+            RHN.logInfo("fetching list of Red Hat Channels")
+            allchannels = channel.listRedHatChannels(RHN)
+        elif opts.custom:
+            RHN.logInfo("Listing Custom Channels")
+            allchannels = channel.listMyChannels(RHN)
+        else:
+            RHN.logInfo("Listing all software channels on your satellite")
+            allchannels = channel.listAllChannels(RHN)
+
+        # mangle the list of base channels to include children and subs
+        for chan in allchannels:
+            RHN.logDebug("processing data for channel %(label)s" % chan)
+            data = channel.getDetails(RHN, chan['label'])
+            chan.update(data)
+            if opts.numbers:
+                RHN.logDebug("Getting list of subscribed systems for channel %(label)s" % chan)
+                chan['subs'] = channel.listSubscribedSystems(RHN, chan['label'])
+            else:
+                # so that len(chan['subs']) will always work
+                chan['subs'] = []
+
+        chanobj = merge_channels(allchannels, RHN.logger, opts.regex, opts.skip_unused)
+
+        if opts.numbers:
+            fmtstr = "%(label)s [%(usage)d]"
+        else:
+            fmtstr = "%(label)s"
+
+        print "Channel Summary"
+        if opts.skip_unused:
+            print "(Channels with no subscribed systems omitted)"
+        for p in chanobj.values():
+            print fmtstr % p
+            for c in sorted(p['children'], key = itemgetter('label')):
+                print "  |- %s" % fmtstr % c
+        
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+
+    
+
+
