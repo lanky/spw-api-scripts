@@ -38,7 +38,6 @@ This requires the presence of the 'rhnapi' module on your PYTHONPATH.
 import sys
 import os
 from optparse import OptionParser, OptionGroup
-import logging
 import re
 
 # -------------------------- Custom Python Modules --------------------------- #
@@ -109,12 +108,19 @@ if __name__ == '__main__':
     # Parse command line args and set loglevel
     opts, args = parse_cmdline(sys.argv)
 
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     try:
         # initialiase an RHN Session with loglevel set to WARNING (30)
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = not(opts.quiet),
-                                logname = os.path.basename(sys.argv[0], loglevel=30)
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
                                 )
         # --verbose ?
         # sets logging to INFO level
