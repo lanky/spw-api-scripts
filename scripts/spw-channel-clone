@@ -1,0 +1,413 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears / Steven Hardy
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+
+__doc__ = """
+spw_clone_channel
+
+A script to clone a channel in your RHN Satellite, with or without errata.
+Can recursively clone channels with all their children
+
+This requires the presence of the 'rhnapi' module on your PYTHONPATH.
+"""
+
+__author__ = "Stuart Sears / Steven Hardy"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import sys
+import os
+from optparse import OptionParser, OptionGroup
+import re
+import time
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import utils
+from pprint import pprint
+
+
+# ---------------------- Script Configuration Settings ----------------------- #
+
+# server hostname and config file
+RHNHOST = 'localhost'
+RHNCONFIG = '~/.rhninfo'
+
+# authentication info
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+DELIM = '/'
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    preamble = """Clone a channel in your RHN Satellite. Supports recursion and
+generation of clone labels through regex substitution or adding a prefix (or both)"""
+    usagestr = "%prog [OPTIONS] [-p PARENT] -c SOURCECHANNEL [ -d DESTCHANNEL ]"
+
+    # intitialise our parser instance and set some core options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options",
+        "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+
+    rhngrp.add_option("--server", default=RHNHOST,
+        help="RHN satellite server hostname [%default]")
+    rhngrp.add_option("--login", default=RHNUSER, help="RHN login (username)")
+    
+    rhngrp.add_option("--pass", dest = "password", default=RHNPASS,
+        help="RHN password. This is better off in a config file.")
+    
+    rhngrp.add_option("--config", dest = "config", 
+        help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    
+    rhngrp.add_option("-C", "--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # Channel Specification
+    changrp = OptionGroup(parser, "Channel Options")
+    changrp.add_option("-c","--source-channel", dest = "source", default=None,
+        help = "source channel LABEL")
+
+    changrp.add_option("-d","--dest-channel", dest = "dest",
+        help = """destination channel LABEL, note this is used as a prefix to
+existing labels when cloning recursively using -r/--child""")
+
+    changrp.add_option("-r", "--recursive", action = "store_true", default=False, 
+        help = "clone recursively, e.g a channel and all its children")
+
+    changrp.add_option("-p","--parent",
+        help="parent for new channel. Your new channel will be a base channel without this.", default=None)
+
+    changrp.add_option("-n","--no-errata", dest = "noerrata", default=False,
+        help="do not clone errata [%default]", action="store_true")
+
+    changrp.add_option("-s","--summary",
+        help="Channel Summary - dest label used if omitted.", default=None)
+
+    changrp.add_option("-x","--regex", dest = "regex", default=None,
+        help = """sed-syntax regex ('PATTERN/REPLACEMENT') to formulate the destination channel labels
+by doing a regex replacement on source channel label(s), useful for --child clones where no prefix is desired""")
+
+    changrp.add_option("-D", "--delimiter", default = DELIM,
+        help = "single-character delimiter to use in the expression passed to --regex. default is '%default'.")
+
+    changrp.add_option("-P", "--prefix", default = None,
+        help = "prefix for generated clone channels (simply prepended to existing labels)")
+
+    changrp.add_option("--report", action = "store_true", default = False,
+        help = "simply report the clones that would be created and exit")
+
+    parser.add_option_group(changrp)
+
+
+    # process and sanitise options if needed:
+    def error(lines, ecode=1):
+        """
+        Error process
+        takes a list of lines and an optional exit code
+        """
+        print '\n'.join(lines)
+        parser.print_help()
+        sys.exit(ecode)
+
+    opts, args = parser.parse_args()
+    if opts.source is None:
+        error(["no source channel label provided"])
+    
+    if not opts.dest:
+        if not ( opts.regex or opts.prefix):
+            error([ "you have not specified a destination channel",
+                    "At least one of --regex or --prefix is required"])
+
+    elif opts.recursive:
+        error( ["you specified both destination and recursion",
+                "I have no idea what you want me to do"])
+
+    if opts.parent and opts.recursive:
+        error( ["recursive cloning and --parent do not mix"])
+
+    if opts.delimiter:
+        if len(opts.delimiter) != 1:
+            error(["regex delimeters must be a single character"])
+
+    return opts, args
+
+# ---------------------------------------------------------------------------- #
+
+def label_to_name(label):
+    """
+    perform some basic substitutions on a string to make it suitable for a channel Name, rather than a label
+    Essentially, this removes all the hyphens, uppercases RHEL, RHN, ES, AS, WS, title cases the rest.
+    """
+    capwords = [ 'rhn', 'rhel', 'as', 'es', 'ws', 'lbg' ]
+    # at the moment these are the only arches we have...
+    arches = [ 'i386', 'x86_64' ]
+    output = []
+    for word  in re.split('[-_]', label):
+        if word in capwords:
+            output.append(word.upper())
+        elif  word in arches:
+            output.append(word)
+        else:
+            output.append(word.capitalize())
+    return ' '.join(output)
+
+# ---------------------------------------------------------------------------- #
+
+def generate_clone_labels(srcchans, logger, regex = None, prefix = None, delimiter = DELIM):
+    """
+    parses 2 lists of channel labels and performs either regex substitution
+    or prepends a prefix to them to form the destination labels.
+    returns list of channel mappings.
+
+    srcchans is a list of channel information dict structures
+
+    the provided list of channels should be BASE, followed by CHILDREN or funny things
+    will happen in recursive mode :)
+
+    order of events:
+    1. regex
+    2. prefix
+    3. mapping
+    
+    """
+    results = []
+    if regex:
+        logger.debug("using supplied regex %s" % regex)
+        p, r = regex.split(delimiter)
+        patt = re.compile(r'%s' % p.decode('string-escape'))
+    for s in srcchans:
+        src = s.get('label')
+        logger.debug("calculating clone label for %s")
+        if regex:
+            dst = patt.sub(r, src)
+            logger.debug("REGEX: %s => %s" %(src,dst))
+        if prefix:
+            dst = "%s-%s" %(prefix, src)
+            logger.debug("PREFIX: %s => %s" %(src,dst))
+        if not (regex or prefix):
+            print "no regex or prefix. setting None"
+            dst = None
+        s['clone_label'] = dst
+    return srcchans
+    
+# ---------------------------------------------------------------------------- #
+
+def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
+    """
+    simply puts together and then returns a dict representing your new channel
+
+    parameters:
+    chanobj(dict)           - dict representing source channel (from channel.getDetails)
+    newlabel(str)           - label for new cloned channel
+    logger(logging.Logger)  - a logger for reporting (probably rhnSession.logger)
+    parent(str)             - label for parent of new cloned channel. Optional.
+    """
+    logger.debug("Generating channel info for clone %s" % newlabel)
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    # template
+    clonelabel = chanobj.get('clone_label', None)
+    # backwards compat - remove this after testing
+    if clonelabel is None and newlabel is not None:
+        clonelabel = newlabel
+    cloneobj = {
+        'summary' : "Clone of %s, created on %s" %(chanobj['label'], timestamp),
+        'name'    : label_to_name(chanobj['label']),
+        'label'   : clonelabel,
+    }
+
+    if parent is not None:
+        cloneobj['parent_label'] = parent
+
+    if chanobj['description'] != '':
+        logger.debug("Adding description %(description)s" % chanobj)
+    if chanobj['gpg_key_url'] != '':
+        logger.debug("Adding GPG Key URL '%(gpg_key_url)s'" % chanobj)
+        cloneobj['gpg_url'] = chanobj['gpg_key_url']
+    if chanobj['gpg_key_id']:
+        logger.debug("Adding GPG Key ID true == %(gpg_key_id)s" % chanobj)
+        cloneobj['gpg_id'] = chanobj['gpg_key_id']
+    if chanobj['gpg_key_fp']:
+        logger.debug("Adding GPG Fingerprint %(gpg_key_fp)s" % chanobj)
+        cloneobj['gpg_fingerprint'] = chanobj['gpg_key_fp']
+
+    return cloneobj        
+
+# ---------------------------------------------------------------------------- #
+
+def main():    
+    """
+    main script functionality
+    """
+    # Parse command line args and set loglevel
+    opts, args = parse_cmdline(sys.argv[1:])
+    # configure log verbosity
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+    
+    # initialiase an RHN Session
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+# --------------------------- Sanity Checking Code --------------------------- #
+        # list of valid channel labels for checking source channel existence
+        channels = [ x['label'] for x in channel.listSoftwareChannels(RHN) ]
+        # this may be an inefficient approach
+        source_channels = []
+        if opts.source not in channels:
+            RHN.logError("source channel %s does not exist" % opts.source)
+            print "Error: no such channel label: %s" % opts.source
+            sys.exit(2)
+        else:
+            source_channels = [ channel.getDetails(RHN, opts.source) ]
+        if opts.parent:
+            parentinfo = channel.getDetails(RHN, opts.parent)
+            if parentinfo and len(parentinfo.get('parent_channel_label', '')) != 0:
+                RHN.logError("%s is not a valid existing parent channel" % opts.parent)
+                sys.exit(2)
+            else:
+                parentlabel = opts.parent
+        # now get a list of child channels if we specified --recursive
+        # we can't specify a parent channel and recursive cloning, so
+        # this is an exception to the if opts.parent block
+        elif opts.recursive:
+            source_channels.extend(channel.listChildren(RHN, opts.source))
+
+        # print "Cloning channels: %s" % '\n'.join(source_channels)
+
+# -------------------------- Recursive Cloning Code -------------------------- #
+
+        # let's apply the regex and or prefix substitutions on our provided channels
+        if not opts.dest:
+            # chanmaps now a list of dict.
+            chanmaps = generate_clone_labels(source_channels, regex = opts.regex,
+                                             prefix = opts.prefix, delimiter = opts.delimiter,
+                                             logger = RHN.logger)
+        elif len(source_channels) != 1:
+            print "how come we do not have exactly one source channel?"
+            sys.exit(2)
+
+        else:
+            chanmaps = [ (source_channels[0].get('label'), opts.dest) ]
+
+        # generic parent mapping
+        parentlabel = opts.parent
+# --------------------------- base channel cloning --------------------------- #
+        if opts.recursive:
+            # in recursive mode, the base channel (was opts.source) is the first obj
+            # in our processed list of channels
+            baseobj = chanmaps.pop(0)
+            RHN.logDebug("Recursive mode. Cloning all child channels of %(label)s" % baseobj)
+            # clone the base channel
+            # chanobj, newlabel, logger, parent = None
+            # baseinfo = channel.getDetails(RHN, base)
+            # TODO: update generate_clone_info to just use the munged channel obj
+            baseclone = generate_clone_info(baseobj, RHN.logger)
+
+            # there is some repetition here. Break this out into a separate function?
+            if opts.report:
+                if parentlabel is not None:
+                    print "would clone channel %s as %s/%s" %(baseinfo['label'], parentlabel, baseclone['label'])
+                else:           
+                    print "would clone channel %(label)s as %(clone_label)s" % baseobj
+                parentlabel =  baseobj.get('clone_label')                    
+
+            elif channel.cloneChannel(RHN, baseobj['label'], opts.noerrata, **baseclone):
+                RHN.logInfo("successfully cloned %(label)s as %(clone_label)s" % baseobj )
+                parentlabel = baseobj.get('clone_label')
+            else:
+                RHN.logErr("Failed to clone base channel %(label)s. Aborting" % baseobj)
+                print "Error cloning channel"
+                sys.exit(2)
+
+        print "Parent: %s" % parentlabel
+        # if we're in recursive mode, hopefully we already cloned our base channel, let's
+        # attempt the rest. If not, let's just work our way through the list.
+        # print "Channel Maps"
+        # pprint(chanmaps)
+# -------------------------- child channel cloning --------------------------- #
+        for chanobj in chanmaps:
+            cloneinfo = generate_clone_info(chanobj, RHN.logger, parent = parentlabel)
+            if opts.debug:
+                print "channel information for clone %(clone_label)s od %(label)s" % chanobj
+                pprint (cloneinfo)
+            if opts.report:
+                if parentlabel is not None:
+                    print "would clone channel %s as %s/%s" %(chanobj['label'], parentlabel, cloneinfo['label'])
+                else:           
+                    print "would clone channel %(label)s as %(clone_label)s" % chanobj
+
+            elif channel.cloneChannel(RHN, chan, opts.noerrata, **cloneinfo):
+                RHN.logInfo("successfully cloned %(label)s as %(clone_label)s" % chanobj)
+            else:
+                # if one of the child channels fails, we try all the others anyway
+                RHN.logErr("Failed to clone channel %(label)s." % chanobj)
+                print "Error cloning channel %s"
+                continue
+
+    except KeyboardInterrupt:
+        RHN.logDebug("operation cancelled")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    # if called directly (most likely the case), run the main() function
+    main()
+    
+# footer - do not edit below this    
+# vim modeline    
+# vim: set ts=4 sts=4 sw=4 et ai smartindent ft=python nu:
