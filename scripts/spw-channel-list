@@ -237,6 +237,9 @@ if __name__ == '__main__':
             RHN.enableDebug()
 
         # check for customizations
+        if not opts.quiet:
+            # writing to stderr to allow redirection if necessary
+            sys.stderr.write("Fetching Channel information from your satellite\n")
         if opts.redhat:
             # using the new regex matching in listBaseChannels
             RHN.logInfo("fetching list of Red Hat Channels")
