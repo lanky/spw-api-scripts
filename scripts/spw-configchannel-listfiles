@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# requires the python-rhnapi and python-progressbar modules
 # requires the python-rhnapi module
 #
 # Copyright 2009-2012 Stuart Sears
@@ -23,25 +22,37 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
+spw-configchannel-listfiles
+
 Lists configuration files and details from the chosen config channel(s)
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
-# standard library imports
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
 import sys
 from optparse import OptionParser, OptionGroup
 
-# custom module imports
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import configchannel
 
-# configuration variables. Probably okay, actually.
+# --------------------------- Script Configuration --------------------------- #
+
+# config file location and server hostnames
 RHNCONFIG = '~/.rhninfo'
 RHNHOST = 'localhost'
+
+# authentication info
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
+
+# script-specific configuration
+
 # Column separator
 fieldsep = " | "
+
 # shorter names for field for prettier output
 mapped_fields = { 'permissions_mode' : 'perms',
                   'selinux_ctx' : 'context',
@@ -58,9 +69,11 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -70,6 +83,8 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
@@ -77,8 +92,9 @@ def parse_cmdline(argv):
     cfggrp.add_option("-a", "--all", action = "store_true", default  = False,
         help = "list all channels and their content files")
     cfggrp.add_option("-c", "--channel", help = "list only the specified channel(s). Comma-separated list if more than one.")
-    cfggrp.add_option("-f","--fields", help = "comma-separated list of fields to display per file. choose from: perms,owner,group,context,type")
+    cfggrp.add_option("-f","--fields", help = "comma-separated list of fields to display per file. choose from: [ perms, owner, group, context, type, revision ] ")
     parser.add_option_group(cfggrp)
+    cfggrp.add_option("-l", "--list", action = "store_true", default = False, help = "simply list all config channel labels and exit")
 
 
     if len(argv) == 0:
@@ -101,9 +117,11 @@ def print_data(data):
     """
     pretty-prints the given channel data
     """
+    # TODO - simplify this, it's overcomplicated.
     # calculate maximum field widths for pretty output:
     fwidths = {}
     for field in data.get('headers'):
+        print field
         hlen = len(mapped_fields.get(field, field))
         fwidths[field] = max(get_maxwidth(data['files'], field), hlen)
 
@@ -133,6 +151,7 @@ def get_maxwidth(filelist, field):
     Returns the length of the longest value of a given key from a
     list of dict
     """
+    # TODO: possibly add this functionality to rhnapi.utils
     # handle shorter names in mapped_fields (for easier printing)
     fname = mapped_fields.get(field, field)
     return max([ len(x.get(field)) for x in filelist] + [len(fname)])
@@ -145,17 +164,38 @@ def get_maxwidth(filelist, field):
 if __name__ == '__main__':
     
     opts, args = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     # initialise an RHN Session
-    # safety mechanism until the script actually works:
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
-        # handle debugging requests
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
+        if opts.list:
+            print "Configuration Channels"
+            print "======================"
+            print '\n'.join([ x['label'] for x in configchannel.listGlobals(RHN) ])
+            sys.exit(0)
+
         if opts.all:
             mychannels = configchannel.listGlobals(RHN)
         else:
             mychannels = configchannel.lookupChannelInfo(RHN, opts.channel.split(','))
+
 
         if opts.fields:
             headers = []
@@ -167,7 +207,7 @@ if __name__ == '__main__':
                 else:
                     headers.append(field)
         else:
-            headers = [ 'path', 'type', 'owner', 'group', 'permissions_mode', 'selinux_ctx' ]
+            headers = [ 'path', 'type', 'owner', 'group', 'permissions_mode', 'selinux_ctx', 'revision' ]
 
         for chan in mychannels:
             chandata = { 'name' : chan.get('name'),
@@ -179,7 +219,7 @@ if __name__ == '__main__':
             for f in configchannel.lookupFileInfo(RHN, chan['label'], chanfiles):
                 fileinfo = {}
                 for h in chandata['headers']:
-                    fileinfo[h] = f.get(h, '-')
+                    fileinfo[h] = str(f.get(h, '-'))
 
                 chandata['files'].append(fileinfo)
             print_data(chandata)
