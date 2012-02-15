@@ -22,9 +22,13 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-spw_delete_channel
+spw-channel-delete
 
 RHN XMLRPC API script to delete a chosen channel or channels
+
+Danger Will Robinson!
+There is no 'undelete' beyond keeping a backup of your satellite/spacewalk database
+and restoring it (or exporting the channel)
 
 requires the rhnapi python module (python-rhnapi)
 """
@@ -67,10 +71,11 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity. Sets loglevel to INFO")
-    parser.add_option("-q", "--quiet", action = "store_true", default = False, help = "Disable all logging and output")
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -143,12 +148,19 @@ def generate_chanlist(rhn):
 if __name__ == '__main__':
     
     opts, chanlist = parse_cmdline(sys.argv)
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     try:
         # login to our satellite
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = not(opts.quiet),
-                                logname = os.path.basename(sys.argv[0]), loglevel=30,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
                                 )
         # did we give the --debug switch?
         if opts.verbose:
