@@ -1,0 +1,348 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+# This script may or may not do unpleasant things to your satellite.
+# make backups first.
+
+__doc__ = """
+spw-configchannel-clone
+
+Clones configuration channels on an RHN Satellite / Spacewalk server.
+Process:
+* gather information about your chosen configuration channel
+* create a new, empty configchannel with the chosen name
+* create and populate files, directories and symlinks, based on the old channel content
+
+In doing this you lose version history on the files in the new channel - only the latest revision is imported.
+"""
+
+__author__ = "Stuart Sears <sjs@redhat.com>"
+
+# standard library imports
+import sys
+import os
+import re
+import time
+from optparse import OptionParser, OptionGroup
+
+# -------------------------- custom module imports --------------------------- #
+import rhnapi
+from rhnapi import configchannel
+from rhnapi import utils
+
+# global vars for defaults
+# At least RHNHOST *must* be specified.
+RHNHOST = 'localhost'
+RHNCONFIG = '~/.rhninfo'
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+        
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    give this sys.argv[1:] as an argument to avoid any issues with the script name
+    being considered an 'argument' and processed
+    """
+    preamble = """Clone a configuration channel as part of a release or promotion workflow. Or just for kicks.
+This script can cause damage to your satellite and should be used with care.
+    """
+    usagestr = "%prog [OPTIONS] SOURCECHANNEL DESTCHANNEL"
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options
+    ccgrp = OptionGroup(parser, "Configuration Channel Options")
+    ccgrp.add_option("--list", action="store_true", default=False,
+        help="just list existing config channel labels and exit")
+    ccgrp.add_option("-u","--update", action="store_true", default = False,
+        help="Update existing channels, rather than skipping them. Use with caution.")
+    ccgrp.add_option("-r","--replace", action="store_true", default = False,
+        help="Replace (delete and recreate) existing channels, rather than skipping them. Use with caution.")
+    ccgrp.add_option("-x", "--regex", default = False, action = "store_true",
+        help = "SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. Single quote them! Use with extreme caution.")
+
+    parser.add_option_group(ccgrp)
+    # add debug option for xmlrpc errors
+
+    opts, args = parser.parse_args(argv)
+    # so sanity-chacking stuff here
+    if len(args) != 2 and not opts.list: 
+            print "we require both source and destination channel labels"
+            parser.print_help()
+            sys.exit(1)
+
+    # finally return the cleaned options and args
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+def get_confchannel_info(rhn, chanlabel, logger):
+    """
+    Processes the specified channels, getting filelists and metadata
+    """
+    channeldata = configchannel.detailsByLabel(rhn, chanlabel)
+    filelist = [ x['path'] for x in configchannel.listFiles(rhn, chanlabel) ]
+    channeldata['files'] = []
+    for fentry in configchannel.lookupFileInfo(rhn, chanlabel, filelist):
+        logger.debug("processing file %(path)s" % fentry)
+        channeldata['files'].append(fentry)
+    return channeldata
+        
+# ---------------------------------------------------------------------------- #
+
+def create_config_channel(rhn, chanobj, logger):
+    """
+    The actual channel creation
+    Creates an empty configuration channel for us to populate using add_channel_content
+
+    returns a boolean, True for success.
+    """
+    logger.info("creating new configuration channel %(label)s" % chanobj)
+    chandata = configchannel.create(rhn, chanobj['label'], chanobj['name'], chanobj['description'])
+    if chandata:
+        existing_labels.append(chandata['label'])
+        return True
+        
+# ---------------------------------------------------------------------------- #
+
+def add_channel_content(rhn, chanobj, logger):
+    """
+    Adds a file, directory or symlink to the given configuration channel.
+    if the object already exists, it will be replaced and its revision number updated.
+
+    returns: True or False
+
+    parameters:
+    rhn(rhnapi.rhnSession)      - authenticated RHN session
+    chanobj(dict)               - channel object imported from JSON
+    fileobj(dict)               - file/dir/symlink object
+    logger(logging.Logger)      - logger object for reporting
+    """
+    fail_list = []
+    for fobj in chanobj['files']:
+        objtype = fobj.get('type', 'file')
+        objpath = fobj.get('path', 'None')
+        logger.info("adding file %(path)s to config channel" % fobj)
+        if configchannel.createOrUpdateObject(rhn, chanobj['label'], fobj):
+            logger.info("Added %s %s to channel %s" %(objtype, objpath, chanobj['label']))
+        else:
+            logger.error("Failed to add %s %s to channel %s " %(objtype, objpath , chanobj['label']))
+            fail_list.append(fobj)
+            continue
+
+    # if we have anything in the fail_list, make sure we pass it back to caller
+    if len(fail_list) != 0:
+        return fail_list
+    # else, it must have all worked.
+    else:
+        return None
+        
+# ---------------------------------------------------------------------------- #
+
+def update_channel_content(rhn, chanobj, logger):
+    """
+    simply removes the 'revision' numbers from the file objects, then passes them onto
+    'add_channel_content' to use...
+    """
+    for fobj in chanobj['files']:
+        if fobj.has_key('revision'):
+            del fobj['revision']
+
+    return add_channel_content(rhn, chanobj, logger)
+
+
+# ---------------------------------------------------------------------------- #
+
+def process_error(msg, logger, errorlist):
+    """
+    just abstracted to reduce code repetition, really
+    logger(loggig.Logger)   - logger instance for error reporting
+    errors(list)            - (global) list of error messages
+    """
+    errors.append(msg)
+    logger.error(msg.strip())
+
+
+        
+# ---------------------------------------------------------------------------- #
+
+
+def main():
+    # process command-line arguments
+    opts, args = parse_cmdline(sys.argv[1:])
+    
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    # declare this as global as we'll be modifying it in a number of places as we
+    # import config channels
+    global existing_labels
+
+    try:
+        # connect to RHN:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+        # get a list of all existing channels - allows us to check for existing channels.
+        existing_labels = [ x['label'] for x in configchannel.listGlobals(RHN) ]
+
+# reduce source and target channels regex search and replace
+        if opts.regex:
+            src_re = re.compile(r'%s' % args[0].decode('string-escape'))
+            dst_patt = args[1].decode('string-escape')
+            source_labels = [ x for x in existing_labels if src_re.search(x) ]
+            dest_labels = [ src_re.sub(dst_patt, x) for x in source_labels ]
+            maxlen = max([ len(x) for x in source_labels])
+            fmtstr = "%%-%ds => %%s" % maxlen
+# if we only want a list of regex replacements
+            if opts.list:
+                print "Channels matching regex ( => destination channel)"
+                print "==========================================="
+                for pair in zip(source_labels, dest_labels):
+                    print fmtstr % pair
+                sys.exit(0)
+# listing without --regex                
+        elif opts.list:
+            print "Existing Configuration Channels"
+            print "==========================================="
+            print '\n'.join(existing_labels)
+            sys.exit(0)
+# now we have no --list or --regex
+        else:
+            # convert args to a list
+            # technically this means we would support comma-separated lists of channel labels
+            # but we won't advertise that fact until we're sure it works
+            source_labels = args[0].split(',')
+            dest_labels = args[1].split(',')
+
+
+# ---------------------- Configuration Channel Cloning ----------------------- #
+# pair up the source and destination labels and process them
+# place to store error messages for final reporting:
+        global errors
+        errors = []
+        for srclabel, dstlabel in zip(source_labels, dest_labels):
+            if srclabel not in existing_labels:
+                process_error("Source channel label %s does not exist on your satellite.\n" % srclabel, RHN.logger, errors)
+                continue
+            else:
+                # fetch the existing source channel data:
+                chandata = get_confchannel_info(RHN, srclabel, RHN.logger)
+                # make changes to reflect the destination channel info (with a timestamp)
+                chandata.update({ 'name' : dstlabel,
+                                  'label' : dstlabel,
+                                  'description' : '%s [Cloned on %s]' % (chandata['description'],
+                                                   time.strftime('%Y-%m-%d %H:%M')) })
+
+                RHN.logInfo("Starting cloning process for Config Channel %s" % srclabel)
+
+            if dstlabel in existing_labels:
+                # okay, the channel already exists, do we want to replace it?
+                if opts.replace:
+                    RHN.logInfo("replacing already existing channel %(label)s" % chandata)
+                    # let's keep a backup of the existing data instead
+                    res = configchannel.deleteConfigChannel(RHN, chandata['label']) and create_config_channel(RHN, chandata , RHN.logger)
+                    if not res:
+                        process_error("failed to replace existing channel %(label)s\n" % chandata, RHN.logger, errors)
+                        continue
+
+                # channel exists, we want to update in-place...
+                elif opts.update:
+                    RHN.logInfo("Channel %(label)s already exists, updating the files in it" % chandata)
+                # channel exists and we are going to leave it alone...
+                else:
+                    process_error("Channel %(label)s already exists\n" % chandata, RHN.logger, errors)
+                    continue
+
+            else:
+                if create_config_channel(RHN, chandata, RHN.logger):
+                    RHN.logInfo("created config channel %(label)s" % chandata)
+                else:
+                    process_error("could not create configuration channel %(label)s\n" % chandata, RHN.logger, errors)
+                    continue
+
+                # now if we get here, our channel should exist...
+                if opts.update:
+                    failed_objects = update_channel_content(RHN, chandata, RHN,logger)
+                else:
+                    failed_objects = add_channel_content(RHN, chandata, RHN.logger)
+
+                # process our failed objects, if there are any
+                if failed_objects is not None:
+                    rejectsfile = "%(label)s-rejects.json" % chandata
+                    process_error("some content could not be uploaded to %(label)s\n" % chandata, RHN.logger, errors)
+                    process_error("saving rejects to %s\n" % rejectsfile, RHN.logger, errors)
+                    if utils.dumpJSON(failed_objects, rejectsfile):
+                       RHN.logInfo("Rejects saved to %s" % rejectsfile)
+                    else:
+                       process_error("could not save rejects file. This should not happen.", RHN.logger, errors)
+
+    except KeyboardInterrupt:
+        print "Operation Cancelled\n"
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    main()
+    
+
+# footer - do not edit below this line
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
