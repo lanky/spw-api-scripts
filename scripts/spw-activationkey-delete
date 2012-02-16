@@ -22,7 +22,7 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-spw_delete_activationkeys
+spw-activationkey-delete
 
 Deletes the provided (list of) Activation Key(s) from your satellite
 
@@ -30,32 +30,38 @@ Uses the python-rhnapi module to do this.
 
 WARNING
 This script irrevocably removes activation keys from your satellite.
-use with care. Preferably backup the keys using export-activation-keys.py first
+use with care.
+You can backup the keys using spw-activationkey-export first
 """
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
-# python standard library imports
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
 import sys
 import re
 from optparse import OptionParser, OptionGroup
 
-# custom rhnapi modules. Make sure they're on your
+# -------------------------- Custom Python Modules --------------------------- #
 # PYTHONPATH (or in the same dir as this script)
 import rhnapi
 from rhnapi import activationkey
 
 
-## -------------- Customisation ------------------ ##
-# At least RHNHOST *must* be specified (or provided on the commandline)
-# if you wish it unset, set it to None here (no quotes)
+# --------------------------- Script Configuration --------------------------- #
+
+# config file location and server hostname
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
-# put these in your configfile, dammit;
+
+# authentication information
 RHNUSER = None
 RHNPASS = None
+
+# script-specific customisation
 react_pattern = re.compile(r'^(Kickstart )?(Reactivation|re-activation) Key.*$', re.I)
 
-## -------------- The script itself  ------------ ##
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -67,9 +73,11 @@ def parse_cmdline(argv):
     # initialise our parser and set some generic options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
-    parser.add_option("-v", "--verbose", action = "store_true", default = False,
-            help = "increase verbosity of output")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -79,6 +87,8 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
@@ -94,21 +104,37 @@ def parse_cmdline(argv):
         
 # --------------------------------------------------------------------------------- #
 
-if __name__ == '__main__':
-    
+def main():    
     # process command-line arguments
-    opts, args = parse_cmdline(sys.argv[1:])
     # initiate a connection to 
+
+    opts, args = parse_cmdline(sys.argv[1:])
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
 
         all_keys = activationkey.listActivationKeys(RHN)
 
         if not opts.include_reactivation:
-            if opts.verbose:
-                print "Removing reactivation keys from our key list"
+            RHN.logInfo("Removing reactivation keys from our key list")
             all_keys = [ x for x in all_keys if not react_pattern.match(x['description'])]
 
         if opts.list:
@@ -125,16 +151,18 @@ if __name__ == '__main__':
             sys.exit(0)
 
         for akey in args:
+            RHN.logDebug("Going to delete Activation key %s" % akey)
             if activationkey.delete(RHN, akey):
-                print "activation key %s deleted" % akey
+                RHN.logInfo("Successfully deleted key %s" % akey)
+                print "Activation key %s deleted" % akey
             else:
-                print "failed to delete activation key %s" % akey
+                RHN.logErr("ERROR: failed to delete activation key %s" % akey)
+                print "Failed to delete activation key %s" % akey
 
     except KeyboardInterrupt:
         print "Operation Cancelled\n"
         sys.exit(1)
 
-
-
-    
+if __name__ == '__main__':
+    main()
 
