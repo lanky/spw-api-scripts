@@ -21,13 +21,17 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-spw_audit_packages
+spw-channel-packageaudit
 
 Diffs installed package lists for subscribed systems against a base
 software channel and all child channels.
+
 Intended to show systems that have packages installed locally which are not in the
 satellite (or are newer than those available from the satellite.)
+
 Needs a base channel label to work with.
+
+Can provide CSV output.
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
 
@@ -64,8 +68,9 @@ RHNPASS = None
 
 def parse_cmdline(argv):
     """
-    process the commandline :)
+    process commandline options and arguments
     """
+
     preamble = """Diffs installed package lists for subscribed systems against a base
 software channel and all child channels.
 Intended to show systems that have packages installed locally which are not in the
@@ -112,6 +117,14 @@ Needs a base channel label to work with.
         print "see -h or --help for details"
         sys.exit(1)
 
+    if opts.quiet and not opts.output:
+        print "ERROR: Conflicting options"
+        print "you have specified both --quiet mode with no output file"
+        print "This will work, but provide no information at all"
+        print "Please pick one or the other"
+        parser.print_help()
+        sys.exit(2)
+
     # finally...
     return opts, args[0]
 
@@ -128,13 +141,13 @@ def index_pkgs(packagelist, logger, verbose = False, progressbar = False):
     - this turns out to be channel-specific. yay for us.
     """
 #    results = []
-    if verbose:
-        logger.debug("indexing packages by NVREA")
+    logger.info("indexing packages by NVREA")
     if progressbar:
         widgets = [ 'Packages: [', Counter(), ']', Bar(), Timer() ]
         pbar = ProgressBar(widgets = widgets, maxval = len(packagelist)).start()
     for p in packagelist:
         # workaround for the clashing key names in system/channel package lists.
+        # WHY do these not use the same key?
         if p.has_key('arch') and not p.has_key('arch_label'):
             p['arch_label'] = p['arch']
 
@@ -159,6 +172,7 @@ def index_pkgs(packagelist, logger, verbose = False, progressbar = False):
         print            
 
     return packagelist
+
 # --------------------------------------------------------------------------------- #
 
 def latest_pkg(pkg1, pkg2):
@@ -282,9 +296,10 @@ if __name__ == '__main__':
             RHN.enableDebug()
 
         # get a list of existing base channels
+        RHN.logDebug("Enumerating software channels on your satellite")
         basechannels = channel.listBaseChannels(RHN)
         if chanlabel not in basechannels:
-            RHN.logerror("channel label %s is not an existing base channel on your satellite" % chanlabel)
+            RHN.logError("channel label %s is not an existing base channel on your satellite" % chanlabel)
 
         else:
             # collate a list of child channels for the given base
@@ -303,10 +318,12 @@ if __name__ == '__main__':
                 RHN.logInfo("Processing %s" % chan)
                 childpkgs = channel.listLatestPackages(RHN, chan)
                 RHN.logInfo("Adding %d packages" % len(childpkgs))
-                channelpkgs += childpkgs
+                channelpkgs.extend(childpkgs)
 
-            RHN.logInfo("indexing package list")
-            channelpkgs = index_pkgs(channelpkgs, RHN.logger, opts.verbose, False)
+            RHN.logInfo("indexing channel package lists")
+            if not opts.quiet:
+                print "Indexing packages for channel %s and its children" %(chanlabel)
+            channelpkgs = index_pkgs(channelpkgs, RHN.logger, opts.verbose, opts.progress)
             chanidx = set([p['nvrea'].strip() for p in channelpkgs])
             
             # list of subscribed systems in this format:
@@ -317,14 +334,19 @@ if __name__ == '__main__':
                 widgets = [ 'Systems [', Counter(), '/ %d]' % len(systemlist), Bar(), Timer() ]
                 pbar = ProgressBar(maxval=len(systemlist), widgets = widgets).start()
             for box in systemlist:
-                RHN.logInfo("listing packages installed on system %(name)s [%(id)d]" % box)
+                RHN.logInfo("Enumerating packages installed on system %(name)s [%(id)d]" % box)
+                if not opts.quiet:
+                    print "Indexing and comparing package list for %(name)s" % box
                 # fold channel information into our system object:
+                RHN.logInfo("Getting system's channel subscriptions")
                 box['basechannel'] = system.getSubscribedBaseChannel(RHN, box['id']).get('label')
                 box['childchannels'] = ','.join([ x['label'] for x in system.listSubscribedChildChannels(RHN, box['id']) ])
                 # list the installed RPM packages from the system record
-                syspkgs = system.listPackages(RHN, box['id'])
+                # and index them using nvrea tags
+                RHN.logInfo("Indexing installed packages for system %(name)s" % box)
+                syspkgs = index_pkgs(system.listPackages(RHN, box['id']), RHN.logger, opts.verbose, opts.progress)
                 # add nvrea tags to each package object
-                syspkgs = index_pkgs(syspkgs, RHN.logger, opts.verbose, False)
+                # syspkgs = index_pkgs(syspkgs, RHN.logger, opts.verbose, False)
                 # ensure there are no duplicates (which there should not be)
                 sysidx = set([p['nvrea'].strip() for p in syspkgs])
                 # add the package list to our system object
