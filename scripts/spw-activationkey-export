@@ -22,7 +22,7 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-spw_export_activationkeys
+spw-activationkey-export
 
 A script to dump activation keys to JSON format, allowing import on another server with the companion import script.
 tested on satellite 5.4, but still considered beta. Backup your satellite DB before using it.
@@ -37,35 +37,39 @@ These items should exist on the destination satellite before you attempt to impo
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
 
-# standard library imports
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
 import sys
-from optparse import OptionParser, OptionGroup
-import simplejson
-from pprint import pprint
+import re
 # for timestamps in filenames
 import time
-import re
+from optparse import OptionParser, OptionGroup
+from pprint import pprint
 
-# custom module imports. Make sure they're on your PYTHONPATH :)
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
-from rhnapi import kickstart
 from rhnapi import activationkey
-# this needs editing to add the ID->name functionality:
 from rhnapi import systemgroup
-# utility functions, including JSON management
 from rhnapi import utils
 
+# --------------------------- Script Configuration --------------------------- #
+
+# server hostname and config file location
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
+
+# authentication
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
+# script-sepcific configuration
 # if we want to exclude reactivation keys (we probably do), this is a simple
 # regex pattern that matches their descriptions.
 react_pattern = re.compile(r'^(Kickstart )?(Reactivation|re-activation) Key.*$', re.I)
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -75,9 +79,9 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+        help = "increase verbosity. Sets loglevel to INFO")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -87,13 +91,15 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
     keygrp = OptionGroup(parser, "Activation Key options", "Options for processing Activation Keys")
     keygrp.add_option("--list", action = "store_true", default = False, help = "List activation keys and exit")
     keygrp.add_option("-a", "--all", action = "store_true", default = False, help = "dump data for ALL activation keys profiles")
-    keygrp.add_option("-f", "--file", help = "filename to dump activation key information to [KICKSTARTLABEL.json or activationkeys.json]")
+    keygrp.add_option("-f", "--file", help = "output filename for activation key information [KICKSTARTLABEL.json or activationkeys.json]")
     keygrp.add_option("-k", "--key", help = "Activation Key (the hyphenated 'hex string'). Can also take a comma-separated list. No spaces.")
     keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Include Reactivation keys if exporting all keys [%default]")
     keygrp.add_option("-s", "--stdout", action = "store_true", default = False,
@@ -113,7 +119,7 @@ def parse_cmdline(argv):
     # finally...
     return opts, args
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def get_key_details(rhn, keyobject, verbose = False):
     """
@@ -125,14 +131,16 @@ def get_key_details(rhn, keyobject, verbose = False):
     keyobject(dict)    - entry from activationkey.listActivationKeys
     """
     keyname = keyobject['key']
+    rhn.logDebug("* fetching configuration channel info for key %s" % keyname)
     keyobject['config_channels'] = activationkey.listConfigChannels(rhn, keyname)
     keyobject['config_deploy'] = activationkey.checkConfigDeployment(rhn, keyname)
     if len(keyobject['server_group_ids']) != 0:
+        rhn.logDebug("* fetching server group information for key %s" % keyname)
         keyobject['server_groups'] = get_group_details(rhn, keyobject['server_group_ids'])
 
     return keyobject
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def get_group_details(rhn, groupids, verbose = False):
     """
@@ -142,6 +150,7 @@ def get_group_details(rhn, groupids, verbose = False):
     """
     results = []
     for grp in groupids:
+        rhn.logDebug("* fetching group details for group ID %s" % grp)
         grpdetails = systemgroup.getDetails(rhn, grp)
         # grpdetails should never be false - we got the groupid from this server, after all
         # still, for safety...
@@ -149,7 +158,7 @@ def get_group_details(rhn, groupids, verbose = False):
             results.append(grpdetails)
     return results
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def keytable(keylist):
     """
@@ -158,23 +167,39 @@ def keytable(keylist):
     if len(keylist) == 0:
         print "(No Activation Keys found)"
         return False
-    print "%-36s %s" %("Activation Key", "Description")
-    print "-----------------------------------  ------------------------------------"
+    # maximum field lengths for all keys in each activationkey object        
+    maxlen = utils.getMaxLen(keylist)
+    #  
+    fmtstr = "%%(key)-%(key)ds %%(description)s" % maxlen
+    print fmtstr % { 'key' : "Activation Key", 'description' : "Description" }
+    print fmtstr % { 'key' : "--------------", 'description' : "-----------"}
     for keyobj in keylist:
-        print "%(key)-36s %(description)s" % keyobj
+        print fmtstr % keyobj
 
+# ---------------------------------------------------------------------------- #
 
-        
-# --------------------------------------------------------------------------------- #
-
-if __name__ == '__main__':
-
+def main():
+# parse command line opts and args
     opts, args = parse_cmdline(sys.argv)
-    # initialiase an RHN Session
-    # print "This is under heavy development and is currenttly non-functional"
-    # sys.exit(0)
+# confgure log and verbosity levels    
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+# initialise an RHN session
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
 
@@ -183,9 +208,9 @@ if __name__ == '__main__':
         # we're going to dump as a list of dict.
         export_data = []
 
+# are we excluding reactivation keys?
         if not opts.reactivation_keys:
-            if opts.verbose:
-                print "Removing reactivation keys from our key list"
+            RHN.logDebug("Removing reactivation keys from our key list")
             all_keys = [ x for x in all_keys if not react_pattern.match(x['description'])]
 
         if opts.list:
@@ -195,42 +220,50 @@ if __name__ == '__main__':
             keytable(all_keys)
             sys.exit(0)
 
+# did we specify a key (or a comma-separated list of keys)?
         if opts.key:
             for akey in opts.key.split(','):
                 if akey in key_names:
                     keydata = [ x for x in all_keys if x.get('key') == akey ][0]
                     export_data.append(get_key_details(RHN, keydata, opts.verbose))
                 else:
-                    print "cannot locate Activation Key %s, does it really exist?" % kslabel
-                    print "skipping for the time being"
+                    RHN.logError("cannot locate Activation Key %s, does it really exist?" % akey)
+                    RHN.logInfo("skipping non-existent key %s" % akey)
                     continue
 
+# export all activation keys?
         if opts.all:
             if opts.verbose:
                 print "processing all Activation Keys. This could take a while"
             for keyobject in all_keys:
-                print "processing Activation Key %s (%s)" % (keyobject['description'], keyobject['key'])
+                RHN.logDebug("Processing  Activation Key %(description)s (%(key)s)" % keyobject)
                 export_data.append(get_key_details(RHN, keyobject, opts.verbose))
+
+# dump to stdout?
         if opts.stdout:
             pprint(export_data)
             sys.exit(0)
+
+# Did we specify a filename
         if opts.file:
             outputfile = opts.file
         else:
+# if not, we invent a name using timestamps
             tstamp = time.strftime('%Y%m%d_%H%M')
             if opts.all:
                 outputfile = 'activationkey-export-%s.json' % tstamp
-                if opts.verbose:
-                    print "no filename provided, exporting all keys to %s" % outputfile
+                RHN.logInfo("no filename provided, exporting all keys to %s" % outputfile)
             elif opts.key:
+# if we're only exporting chosen keys, name the output file after it/them
                 outputfile = '%s.json' % (opts.key.split(',')[0])
                 if opts.verbose:
                     print "no filename provided, using the first key selected (%s)" % outputfile
         if len(export_data) != 0:
             # dump_to_file(outputfile, export_data, opts.verbose)
-            utils.dumpJSON(export_data, outputfile, verbose = opts.verbose)
+            if utils.dumpJSON(export_data, outputfile, verbose = opts.verbose):
+                RHN.logInfo("Successfully exported activation keys to %s" % outputfile)
         else:
-            print "None of the chosen Activation Keys could be successfully dumped."
+            RHN.logError("None of the chosen Activation Keys could be successfully exported.")
             sys.exit(1)
 
 
@@ -239,7 +272,12 @@ if __name__ == '__main__':
         print "operation cancelled"
         sys.exit(1)
 
+        
+# ---------------------------------------------------------------------------- #
 
 
+if __name__ == '__main__':
+    main()
 
-
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 nu ft=python:
