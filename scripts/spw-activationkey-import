@@ -22,34 +22,44 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-A script to import activation keys from a JSON format textfile into your RHN Satellite.
-The json file should have been created by the spw_export_activationkeys.py script
+spw-activationkey-import
 
-Tested on satellite 5.4, but still considered beta. Backup your satellite DB before using it.
+A script to import activation keys from a JSON format textfile into your RHN Satellite or Spacewalk server.
+The json file should have been created by the companion spw-activationkey-export script
+
+Tested on satellite 5.4.1, but still considered beta. Backup your satellite DB before using it.
+
+This provides a subset of the functionality of the kickstart import/export scripts, as follows:
 
 What it attempts to import:
 * activation keys
+- keys will be imported using the logged-in user's RHN organisation (the prefix may change)
+
 * system groups (by ID and name)
+- missing system groups will be created
+
 * config channels
+- skipped if not present on importing satellite
+
 * software channels
+- must exist locally, or import will fail
 
 These items should exist on the destination satellite before you attempt to import a key that uses them.
 
-This script uses the python 'rhnapi' module, which should be on your PYTHONPATH.
+This script uses the python 'rhnapi' module, which should be on your PYTHONPAT
 """
 
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
-# standard library imports
-import sys
+# --------------------- Python Standard Library Modules ---------------------- #
 import os
-from optparse import OptionParser, OptionGroup
-from pprint import pprint
-# for timestamps in filenames
+import sys
 import time
 import re
+from optparse import OptionParser, OptionGroup
+from pprint import pprint
 
-# custom module imports. Make sure they're on your PYTHONPATH :)
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 # software channel management
 from rhnapi import channel
@@ -62,17 +72,24 @@ from rhnapi import systemgroup
 # utility functions, including JSON management
 from rhnapi import utils
 
+# --------------------------- Script Configuration --------------------------- #
+# server hostname and config file location
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
+
+# authentication info
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
+# script-specific configuration
 # if we want to exclude reactivation keys (we probably do), this is a simple
 # regex pattern that matches their descriptions.
 react_pattern = re.compile(r'^(Kickstart )?(Reactivation|re-activation) Key.*$', re.I)
+org_pattern = re.compile(r'(^[\d]+)-(.*)$')
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -94,6 +111,8 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
@@ -118,8 +137,7 @@ def parse_cmdline(argv):
     # finally...
     return opts, args
 
-
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     """
@@ -134,73 +152,92 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     5. set group memberships
        - missing groups are created by name
     """
-    if verbose:
-        print "creating activation key '%s' (%s)" %(keyinfo['description'], keyinfo['key'])
-        rhn.enableDebug()
-    # remove the org prefix from the key (the satellite will add this for us)
-    mykey = keyinfo['key'].split('-',1)[1]
+    rhn.logInfo("creating activation key '%(description)s' (%(key)s)" % keyinfo)
+
+# remove the org prefix from the key (the satellite will add this for us)
+# if our key starts with NUMBER(S)-, this represents the org. Strip them off.
+# this is fairly simplistic, but should do the trick most of the time, as we are only really
+# expecting to import keys from a file whose format we control.
+    rematch = org_pattern.match(keyinfo['key'])
+    if rematch:
+        rhn.logDebug("* Removing org prefix from key for import.")
+# the groups will look like this in a matching key:
+# key: 1-7880d5086175346802f137fed1dafe2f, groups = ('1', '7880d5086175346802f137fed1dafe2f')
+# regex is used to allow for
+# 1. non-org keys (just in case)
+# 2. orgs >= 10
+        mykey = rematch.groups()[1]
 
     # now try to create it. There is more than one way to do this, depending on
     # whether you specify a usage limit or not.
     keyid = activationkey.create(rhn, keyinfo['description'], mykey, basechannel=keyinfo['base_channel_label'])
     
-    if keyid != False:
-        if verbose:
-            print "key created" 
-
+    if keyid:
+        rhn.logDebug("key %(key)s created" % keyinfo)
 
         if len(keyinfo['entitlements']) > 0:
-            if verbose:
-                print "adding entitlements '%s' to key" %(','.join(keyinfo['entitlements']))
+            rhn.logInfo("Adding entitlements '%s' to key" % ','.join(keyinfo['entitlements']) )
             if activationkey.addEntitlements(RHN,keyid, keyinfo['entitlements']):
-                print "Entitlements set appropriately"
+                rhn.logDebug("Entitlements set appropriately")
 
         # add the key to our global activation key list to avoid having to do this again
-
         existing_keys.append( (keyinfo['description'], keyid) )
 
         if len(keyinfo['child_channel_labels']) > 0:
-            print "Adding child channels"
+            rhn.logInfo("Adding child software channels")
             if activationkey.addChildChannels(rhn, keyid, keyinfo['child_channel_labels']):
-                print "child channels successfully added"
+                rhn.logDebug("child channels successfully added")
             
         if len (keyinfo['packages']) > 0:
-            print "Adding packages"
+            rhn.logInfo("Adding packages")
+            # add packages one at a time to aid logging
             for pkg in keyinfo['packages']:
                 if activationkey.addPackages(rhn, keyid, [ pkg ]):
-                    print "  - %s %s" %(pkg.get('name'), pkg.get('arch', '') )
+                    try:
+                        rhn.logDebug("* %(name)s [%(arch)s] added" % pkg )
+                    except KeyError:
+                        rhn.logDebug("* %(name)s added" % pkg)
+                else:
+                    rhn.logError("ERROR: Failed to add package %(name)s - does it exist?" % pkg)
 
         # add configuration channels to the key (if they exist)
 
-        print "adding configuration channels to activation key (only if they exist)"
+        rhn.logInfo("adding (existing) configuration channels to activation key")
         configlabels = []
 
         # check that the config channels exist
         for chan in keyinfo['config_channels']:
             if configchannel.channelExists(rhn,chan['label']):
+                rhn.logDebug("Configuration channel %(label)s exists, appending to our 'add' list" % chan)
                 configlabels.append(chan['label'])
             else:
-                print "config channel label %s does not exist locally, skipping it."
+                rhn.logError("ERROR: config channel label %(label)s does not exist locally, skipping it." % chan)
                 continue
+
+# did we find any of the specified configuration channels?
         if len(configlabels) != 0:        
             if activationkey.addConfigChannels(rhn, [ keyid ], configlabels):
-                print "added configuration channels to key"
+                for c in configlabels:
+                    rhn.logDebug("added configuration channel %s to key" % c)
 
-        # process the config deployment checkbox (value = 1/0)
+# process the config deployment checkbox (value = 1/0)
         if keyinfo['config_deploy'] == 1:
-            res = activationkey.enableConfigDeployment(rhn, keyid)
+            if activationkey.enableConfigDeployment(rhn, keyid):
+                rhn.logInfo("* Enabled config deployment")
         else:
-            res = activationkey.disableConfigDeployment(rhn, keyid)
-        if res:
-            print "set configuration management deployment"
-        if verbose:
-            print "processing system group memberships"
+            if activationkey.disableConfigDeployment(rhn, keyid):
+                rhn.logInfo("* Disabled config deployment")
+# process system groups - create them by name if missing on the local satellite
+# prompt for confirmation of this if in --interactive mode
+        rhn.logInfo("Processing system group memberships")
         if keyinfo.has_key('server_groups'):
             add_groups = []
             for grp in keyinfo['server_groups']:
                 if grp['name'] in existing_groups:
+                    rhn.logInfo("- Server Group %(name)s exists locally, adding it" % grp )
                     add_groups.append(grp)
                 else:
+                    rhn.logError("ERROR: server group %(name)s does not exist locally")
                     # are we in interactive mode? This is passed all the way own from our commandline options
                     if interactive:
                         res = utils.promptConfirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
@@ -210,22 +247,23 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                     if res:
                         newgrp = create_group(rhn, grp)
                         if newgrp is not None:
-                            print "group created"
+                            rhn.logDebug("group '%(name)s' created" % newgrp)
                             existing_groups.append(newgrp['name'])
                             add_groups.append(newgrp)
                         else:
                             print "could not create group %s, skipping" % grp
                             continue
             for grp in add_groups:
-                if verbose:
-                    print "Adding existing system groups to key"
+                rhn.logDebug("Adding existing system groups to key")
                 if activationkey.addGroupsByName(rhn, keyid, grp['name']):
                     print "added group %s" % grp['name']
+        else:
+            rhn.logInfo("No system group memberships specified.")
         return True
     else:
         return False
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_group(rhn, groupinfo):
     """
@@ -238,7 +276,7 @@ def create_group(rhn, groupinfo):
     else:
         return None
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def keytable(keylist):
     """
@@ -247,13 +285,17 @@ def keytable(keylist):
     if len(keylist) == 0:
         print "(No Activation Keys found)"
         return False
-    print "%-36s %s" %("Activation Key", "Description")
-    print "-----------------------------------  ------------------------------------"
+    # maximum field lengths for all keys in each activationkey object        
+    maxlen = utils.getMaxLen(keylist)
+    #  
+    fmtstr = "%%(key)-%(key)ds %%(description)s" % maxlen
+    print fmtstr % { 'key' : "Activation Key", 'description' : "Description" }
+    print fmtstr % { 'key' : "--------------", 'description' : "-----------"}
     for keyobj in keylist:
-        print "%(key)-36s %(description)s" % keyobj
+        print fmtstr % keyobj
 
     
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 if __name__ == '__main__':
     """
@@ -262,19 +304,27 @@ if __name__ == '__main__':
     2. check each key for missinig items on the satellite server.
     """
     opts, args = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     jsonfile = args[0]
-    verbose = opts.verbose
 
     try:
         # first let's attempt to load from the provided filename
         # no point in trying RHN connections if this fails
-
+        
         keyobjects = utils.loadJSON(jsonfile)
 
         if not opts.reactivation_keys:
             keyobjects = [ x for x in keyobjects if not react_pattern.match(x['description']) ]
+
         # extract keynames - we'll use this to check if the key already exists.
         keynames = [ x['key'] for x in keyobjects ]
+
         if opts.key:
             selected_keys = [ x for x in keyobjects if x['key'] in opts.key.split(',') ]
         else:
@@ -286,25 +336,38 @@ if __name__ == '__main__':
             keytable(keyobjects)
             sys.exit(0)
 
+
+        # now we attempt to connect to our satellite/spacewalk server 
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
         # global placeholders - we'll be passing these around and manipulating them
         global existing_keys
         global existing_groups
         global existing_channels
         global existing_configchannels
 
-        # now we populate them
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug = opts.debug)
-        if verbose: print "Enumerating existing keys"
+        # now we populate our global objects
+        RHN.logDebug("Enumerating existing keys")
         # this is a list of tuples - ( description, key )
         existing_keys = activationkey.listActivationKeyNames(RHN)
 
-        if verbose: print "Enumerating existing System Groups"
+        RHN.logDebug("Enumerating existing System Groups")
         existing_groups = [ x['name'] for x in systemgroup.listAllGroups(RHN) ]
 
-        if verbose: print "Enumerating existing software channels"
+        RHN.logDebug("Enumerating existing software channels")
         existing_channels = [ x['label'] for x in channel.listAllChannels(RHN) ]
 
-        # handle debugging requests
 
         for keyobj in selected_keys:
             if (keyobj['description'], keyobj['key']) in existing_keys:
