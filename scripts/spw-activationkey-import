@@ -124,7 +124,6 @@ def parse_cmdline(argv):
     keygrp.add_option("-i", "--interactive", action = "store_true", default = False, help = "Operate in interactive mode. Can be very tedious.")
     parser.add_option_group(keygrp)
 
-
     opts, args = parser.parse_args()
     if len(args) != 1:
         print "you need to provide me a JSON file with activation key data in it"
@@ -170,7 +169,10 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
 
     # now try to create it. There is more than one way to do this, depending on
     # whether you specify a usage limit or not.
-    keyid = activationkey.create(rhn, keyinfo['description'], mykey, basechannel=keyinfo['base_channel_label'])
+    keyid = activationkey.create(rhn,
+                                 keyinfo['description'],
+                                 mykey,
+                                 basechannel=keyinfo['base_channel_label'])
     
     if keyid:
         rhn.logDebug("key %(key)s created" % keyinfo)
@@ -293,11 +295,10 @@ def keytable(keylist):
     print fmtstr % { 'key' : "--------------", 'description' : "-----------"}
     for keyobj in keylist:
         print fmtstr % keyobj
-
     
 # ---------------------------------------------------------------------------- #
 
-if __name__ == '__main__':
+def main():
     """
     This script is intended to do the following:
     1. load a list of activation key structures from a JSON file
@@ -390,3 +391,9 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)
+
+if __name__ == '__main__':
+    main()
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
