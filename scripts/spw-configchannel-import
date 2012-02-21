@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# requires the python-rhnapi and python-progressbar modules
 # requires the python-rhnapi module
 #
 # Copyright 2009-2012 Stuart Sears
@@ -24,40 +23,44 @@
 
 
 __doc__ = """
-import-configchannels.py
+spw-configchannel-import
+
 A script to recreate configuration channels on a satellite from a JSON dump.
-(JSON dump created by the counterpart spw_export_configchannels script.)
+(JSON dump created by the counterpart spw-configchannel-export script.)
 It will:
 * create a configchannel
 * create and populate files, directories and symlinks, based on the JSON content.
 
 This script may or may not do unpleasant things to your satellite.
-make backups first.
+You are stringly advised to make backups before running it.
 """
+
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
-# standard library imports
+
+# --------------------- Python Standard Library Modules ---------------------- #
 import sys
 import os
+from fnmatch import fnmatch
 from optparse import OptionParser, OptionGroup
 
-# custom modules. Make sure they're on your PYTHONPATH
-# hint:
-# sys.path.append('parent directory of rhnapi')
-
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import configchannel
 from rhnapi import utils
 
-# global vars for defaults
-# At least RHNHOST *must* be specified.
+# --------------------------- Script Configuration --------------------------- #
+
+# server hostname and configfile location
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
+
+# authentication
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def parse_cmdline(argv):
     """
@@ -70,9 +73,11 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+        help = "increase verbosity. Sets loglevel to INFO")
+#    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+#        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -82,12 +87,15 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
     ccgrp = OptionGroup(parser, "Configuration Channel Options")
     ccgrp.add_option("-c","--channel",
         help="Channel to create/import from JSON file. Default is ALL channels")
+    ccgrp.add_option("-g", "--glob", help = "Shell-style glob (wildcard pattern) to select channels for import or listing. Single quote or escape them to avoid issues on the command line")
     ccgrp.add_option("--list", action="store_true", default=False,
         help="just list config channel labels in the JSON file and exit")
     ccgrp.add_option("-u","--update", action="store_true", default = False,
@@ -99,38 +107,46 @@ def parse_cmdline(argv):
     # add debug option for xmlrpc errors
 
     opts, args = parser.parse_args(argv)
+
     # so sanity-chacking stuff here
     if len(args) != 1:
-        print "no filename provided"
+        print "ERROR: no filename provided"
         parser.print_help()
         sys.exit(1)
     elif not os.path.isfile(args[0]):
-        print "%s does not appear to exist, or is not a file."
+        print "ERROR: %s does not appear to exist, or is not a file." % args[0]
         parser.print_help()
         sys.exit(2)
+
+    if opts.glob and opts.channel:
+        print "ERROR: Conflicting options: -glob and --channel. Please choose one or the other"
+        parser.print_help()
+        sys.exit(3)
 
     # finally return the cleaned options and args
     return opts, args[0]
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def get_confchannel_info(rhn, channel_label, verbose=False):
     """
     Processes the specified channels, getting filelists and metadata
     """
+    rhn.logInfo("Processing Config Channel %s" % channel_label)
     channeldata = configchannel.detailsByLabel(rhn, channel_label)
+    rhn.logDebug("* Enumerating Config Files")
     filelist = [ x['path'] for x in configchannel.listFiles(RHN, channel_label) ]
     channeldata['files'] = []
     for fentry in configchannel.lookupFileInfo(RHN, channel_label, filelist):
         # we have to handle the ISO datetime stampa - converting to strings
         # we'll probably lose this data on import anyway
-        print "processing file %s" % fentry['path']
+        rhn.logDebug("  - processing file %(path)s" % fentry)
         fentry['modified'] = str(fentry['modified'])
         fentry['creation'] = str(fentry['creation'])
         channeldata['files'].append(fentry)
     return channeldata
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_config_channel(rhn, chanobj, verbose=False):
     """
@@ -141,7 +157,7 @@ def create_config_channel(rhn, chanobj, verbose=False):
         existing_labels.append(chandata['label'])
         return True
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def add_channel_content(rhn, chanobj, verbose=False):
     """
@@ -156,18 +172,16 @@ def add_channel_content(rhn, chanobj, verbose=False):
     fileobj(dict)               - file/dir/symlink object
     verbose(bool)               - be more verbose [False]
     """
+    rhn.logInfo("Adding Content to channel %(label)s" % chanobj)
     fail_list = []
     for fobj in chanobj['files']:
+        rhn.logDebug("* processing file/dir/symlink %(path)s" % fobj)
         objtype = fobj.get('type', 'file')
         objpath = fobj.get('path', 'None')
-        if verbose:
-            print "adding file %s to config channel" % fobj['path']
         if configchannel.createOrUpdateObject(rhn, chanobj['label'], fobj):
-            if verbose:
-                print "Added %s %s to channel %s" %(objtype, objpath, chanobj['label'])
+            rhn.logDebug("  - Added %s %s to channel %s" %(objtype, objpath, chanobj['label']))
         else:
-            if verbose:
-                print "Failed to add %s %s to channel %s " %(objtype, objpath , chanobj['label'])
+            rhn.logError("  - Failed to add %s %s to channel %s " %(objtype, objpath , chanobj['label']))
             fail_list.append(fobj)
             continue
 
@@ -178,7 +192,7 @@ def add_channel_content(rhn, chanobj, verbose=False):
     else:
         return None
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def update_channel_content(rhn, chanobj, verbose=False):
     """
@@ -191,103 +205,131 @@ def update_channel_content(rhn, chanobj, verbose=False):
 
     return add_channel_content(rhn, chanobj, verbose=False)
         
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+        
+def chantable(channelinfo):
+    """
+    Pretty-print existing channels (label, name)
+    parameters:
+    channelinfo - list of channel dict
+    """
+    maxlen = utils.getMaxLen(channelinfo)
+    fmtstr = "%%(label)-%(label)ds %%(name)-%(name)ds" % maxlen
+    print fmtstr % { 'label' : 'Channel Label', 'name' : 'Channel Name' }
+    print fmtstr % { 'label' : '-------------', 'name' : '------------' }
+    for chan in channelinfo:
+        print fmtstr % chan
 
-if __name__ == '__main__':
-    
+# ---------------------------------------------------------------------------- #
+
+def main():    
     # process command-line arguments
     opts, inputfile = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     # declare this as global as we'll be modifying it in a number of places as we
     # import config channels
+# it's either that or just pass it around as an arg. Which is probably better practice. An edit for another time, methinks
     global existing_labels
 
     try:
         # stuff that does not require an RHN session
-        channel_data = utils.loadJSON(inputfile, opts.verbose)
-        json_channels =[ x['label'] for x in channel_data ]
+        import_data = utils.loadJSON(inputfile, opts.verbose)
+
+# wildcard support (also works for listing)            
+        if opts.glob:
+            import_list = [ x for x in import_data if fnmatch(x['label'],opts.glob) ]
+# did we provide a (list of) channels to import?
+        elif opts.channel:
+            import_list = [ x for x in import_data if x['label'] in opts.channel.split(',') ]
+# otherwise, consider all of the channels in the dump file
+        else:
+            import_list = import_data
+
+        import_labels = [ x['label'] for x in import_list ]
 
         # if we asked for a list, just do that and exit
         if opts.list:
-            print "Configuration Channels in file:"
-            print '\n'.join(json_channels)
+            chantable(import_list)
             sys.exit(0)
 
-        # if we specificied a list of channels, process only those:
-        if opts.channel:
-            channel_list = opts.channel.split(',')
-        else:
-            if opts.verbose:
-                print "no channel specified. importing ALL config channels"
-            channel_list = json_channels
-
-        # list of the channel objects from the JSON import that we wish to
-        # push to our satellite.
-        import_data = [ x for x in channel_data if x['label'] in channel_list ]
-
         # now we connect to RHN:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
         # get a list of all existing channels - allows us to check for existing channels.
         existing_labels = [ x['label'] for x in configchannel.listGlobals(RHN) ]
 
-        
-        # now walk through our config channel objects...
-        # process...
-        # 1. does it already exist?
-        # 1.5  if y, do we want to replace it?
-        #     
-        # 2. create the channel
         for chan in import_data:
-            if opts.verbose:
-                print "Starting import process for Config Channel %s" % chan['label']
+# output file for rejects (channels or content we fail to import/update)
+            rejectsfile = "%(label)s-rejects.json" % chan
+            RHN.logInfo("Starting import process for Config Channel %(label)s" % chan)
             if chan['label'] in existing_labels:
-                # okay, the channel already exists, do we want to replace it?
+# if the channel already exists on our server
+
+# channel exists and we specified --replace
                 if opts.replace:
-                    print "replacing already existing channel %s" % chan['label']
+                    RHN.logInfo("replacing already existing channel %(label)s" % chan)
                     res = configchannel.deleteConfigChannel(RHN, chan['label']) and create_config_channel(RHN, chan)
                     if not res:
-                        print "failed to replace existing channel %s" % chan['label']
+                        RHN.logErr("failed to replace existing channel %(label)s" % chan)
 
-                # channel exists, we want to update in-place...
-                if opts.update:
-                    print "Channel %s already exists, updating the files in it" % chan['label']
-                # channel exists and we are going to leave it alone...
+# channel exists and we specified --update
+                elif opts.update:
+                    RHN.logInfo("Channel %(label)s already exists, updating the files in it" % chan)
+# channel exists and we are going to leave it alone...
                 else:
-                    print "Channel %s already exists, skipping" % chan['label']
+                    RHN.logErr("Channel %(label)s already exists, skipping" % chan)
                     continue
-
+# channel does not exist already
             else:
                 if create_config_channel(RHN, chan):
-                    if opts.verbose:
-                        print "created config channel %s" % chan['label']
+                    RHN.logInfo("created config channel %(label)s")
                 else:
-                    print "could not create configuration channel %s, skipping it" % chan['label']
+                    RHN.logError("Creation of  configuration channel %(label)s failed, skipping it" % chan)
+                    RHN.logDebug("Dumping failed channel to %s" % rejectsfile)
+                    if utils.dumpJSON(failed_objects, rejectsfile):
+                        RHN.logDebug("Rejects saved to %s" % rejectsfile)
+                    else:
+                        RHN.logError("could not save rejects file. This should not happen.")
                     continue
 
-            # now if we get here, our channel should exist...
+# channel exists, either as new channel or for updating
             if opts.update:
                 failed_objects = update_channel_content(RHN, chan, opts.verbose)
             else:
                 failed_objects = add_channel_content(RHN, chan, opts.verbose)
 
-            # process our failed objects, if there are any
+# process our failed objects, if there are any
             if failed_objects is not None:
-                rejectsfile = "%s-rejects.json" %(chan['label'])
-                if opts.verbose:
-                    print "some content could not be uploaded to %s" % chan['label']
-                    print "saving rejects to %s" % rejectsfile
+                RHN.logError("some content could not be uploaded to %(label)s" % chan)
+                RHN.logError("saving rejects to %s" % rejectsfile)
                 if utils.dumpJSON(failed_objects, rejectsfile):
-                    print "Rejects saved to %s" % rejectsfile
+                    RHN.logDebug("Rejects saved to %s" % rejectsfile)
                 else:
-                    print "could not save rejects file. This should not happen."
+                    RHN.logError("could not save rejects file. This should not happen.")
                     continue
 
     except KeyboardInterrupt:
         print "Operation Cancelled\n"
         sys.exit(1)
 
+if __name__ == '__main__':
+    main()
 
-
-    
-
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 nu ft=python:
