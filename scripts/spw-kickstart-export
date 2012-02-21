@@ -23,7 +23,7 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__="""
-spw_export_kickstarts
+spw-kickstart-export
 
 A script to extract information about an RHN satellite kickstart profile and export it to JSON.
 This includes the following:
@@ -35,6 +35,7 @@ This includes the following:
 * activation keys
   - configuration channels 
   - system groups
+    - system groups can be created by name if missing.
 
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
@@ -42,7 +43,10 @@ __author__ = "Stuart Sears <stuart@sjsears.com>"
 # ------------------------- standard library imports ------------------------- #
 import sys
 import os
+import time
+from fnmatch import fnmatch
 from optparse import OptionParser, OptionGroup
+from pprint import pprint
 
 # ---------------------------- Custom RHN Modules ---------------------------- #
 import rhnapi
@@ -72,10 +76,11 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
-    parser.add_option("-q", "--quiet", action = "store_true", default = False, help = "Disable all logging and output")
+        help = "increase verbosity. Sets loglevel to INFO")
+#    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+#        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -92,17 +97,19 @@ def parse_cmdline(argv):
     # script-specific options
     ksgrp = OptionGroup(parser, "Kickstart-specific options")
     ksgrp.add_option("--list", action="store_true", default=False, help="List kickstart labels and exit")
-    ksgrp.add_option("-a", "--all", action="store_true", default=False, help="dump data for ALL kickstart profiles")
-    ksgrp.add_option("-k", "--kickstart", help="kickstart label. Can also take a comma-separated list. No spaces.")
+# should we just default to all ? Otherwise the script does nothing by default
+    ksgrp.add_option("-k", "--kickstart", help="kickstart label to export. Can also take a comma-separated list. No spaces. By default ALL kickstart profiles are exported.")
+    ksgrp.add_option("-g", "--glob", help = "shell-style glob for selecting kickstart profiles for export or listing")
     ksgrp.add_option("-f", "--file", help="filename to dump kickstart information to [KICKSTARTLABEL.json]")
-    ksgrp.add_option("-n", "--not-really", action="store_true", default=False, help="DRY RUN. Pretty print data to stdout")
+# renamed to --test for consistency
+    ksgrp.add_option("--test", action="store_true", default=False, help="DRY RUN. Pretty print data to stdout")
     parser.add_option_group(ksgrp)
 
     opts, args = parser.parse_args()
 
-    # check the args for errors etc...
-    if not opts.list and not opts.kickstart and not opts.all:
-        print "You must provide either a kickstart label (or --all) or the --list option"
+    if opts.glob and opts.kickstart:
+        print "ERROR: Conflicting options"
+        print "--glob and --kickstart cannot be used together. Please choose one or the other. Or neither."
         parser.print_help()
         sys.exit(1)
 
@@ -125,31 +132,46 @@ def get_ks_details(rhn, ksobject, verbose = False):
     ksobject                a dict structure containing base kickstart info
     verbose                 whether to make more noise
     """
+    rhn.logInfo("Processing Kickstart Profile %(label)s" % ksobject)
     kslabel = ksobject.get('label')
+    rhn.logDebug("* child channel subscriptions")
     ksobject['child_channels']        = kickstart.getChildChannels(rhn, kslabel)
+    rhn.logDebug("* advanced options")
     ksobject['advanced_opts']         = kickstart.getAdvancedOptions(rhn, kslabel)
+    rhn.logDebug("* software package list")
     ksobject['software_list']         = kickstart.getSoftwareList(rhn, kslabel)
+    rhn.logDebug("* custom kickstart options")
     ksobject['custom_opts']           = kickstart.getCustomOptions(rhn, kslabel)
     # technically included in the base kickstart info:
+    rhn.logDebug("* kickstart tree label")
     ksobject['ks_tree']               = kickstart.getKickstartTree(rhn, kslabel)
     # list all the pre and post scripts
+    rhn.logDebug("* pre and post scripts")
     ksobject['script_list']           = kickstart.listScripts(rhn, kslabel)
+    rhn.logDebug("* assigned IP address ranges")
     ksobject['ip_ranges']             = kickstart.listIpRanges(rhn, kslabel)
     # custom kickstart variables
+    rhn.logDebug("* kickstart (cobbler) variables")
     ksobject['variable_list']         = kickstart.getVariables(rhn, kslabel)
     
     # activation keys are complicated and we need more information than the defaults
     # in case they must be recreated on import:
+    rhn.logDebug("* activation keys")
     ksobject['activation_keys']       = kickstart.getActivationKeys(rhn, kslabel)
     for akey in ksobject['activation_keys']:
+        rhn.logDebug("  - %(key)s")
+        rhn.logDebug("    * adding configuration channels")
         akey['config_channels'] = activationkey.listConfigChannels(rhn, akey['key'])
         akey['config_deploy'] = activationkey.checkConfigDeployment(rhn, akey['key'])
         if len(akey['server_group_ids']) != 0:
+            rhn.logDebug("    * adding server groups")
             akey['server_groups'] = get_group_details(rhn, akey['server_group_ids'])
-        
+    rhn.logDebug("* partitioning scheme")   
     ksobject['partitioning_scheme']   = kickstart.getPartitioningScheme(rhn, kslabel)
+    rhn.logDebug("* registration type ")
     ksobject['reg_type']              = kickstart.getRegistrationType(rhn, kslabel)
     # technically this is unnecessary as it is part of the 'advanced options' in kickstart:
+    # still, for completeness
     ksobject['selinux_mode']          = kickstart.getSELinux(rhn, kslabel)
     ksobject['file_preservations']    = kickstart.listFilePreservations(rhn, kslabel)
     ksobject['gpg_ssl_keys']          = kickstart.listCryptoKeys(rhn, kslabel)
@@ -159,6 +181,12 @@ def get_ks_details(rhn, ksobject, verbose = False):
     # ksobject['logging']               = kickstart.getLogging(rhn, kslabel)
     
     # group ids will not be the same on all servers, so we need their names too:
+    # this needs updating to add kickstart snippets too
+    # that will be interesting as it needs to parse the following elements for 
+# snippet entries:
+# custom kickstart options
+# pre and post scripts
+# all snippets imported in those too.
     
     return ksobject
         
@@ -172,6 +200,7 @@ def get_group_details(rhn, groupids, verbose = False):
     """
     results = []
     for grp in groupids:
+        rhn.logDebug("processing server group ID %d" % grp)
         grpdetails = systemgroup.getDetails(rhn, grp)
         # grpdetails should never be false - we got the groupid from this server, after all
         # still, for safety...
@@ -181,15 +210,39 @@ def get_group_details(rhn, groupids, verbose = False):
         
 # ---------------------------------------------------------------------------- #
 
-if __name__ == '__main__':
-    
-    # parse the command line options and arguments:
+def ks_table(ksobjlist):
+    """
+    Produce a pretty table from a list of kickstart objects
+    """
+    maxlen = utils.getMaxLen(ksobjlist)
+    # use our dict of field lengths to produce a format string for each line
+    fmtstr = "%%(label)-%(label)ds %%(name)-%(name)ds %%(tree_label)s" % maxlen
+    # print a header
+    print fmtstr % {'label' : 'Label', 'name' : 'Name', 'tree_label': 'Kickstart Tree'}
+    print fmtstr % {'label' : '-----', 'name' : '----', 'tree_label': '--------------'}
+    # for each kickstart, print out a formatted line:
+    for ksobj in ksobjlist:
+        print fmtstr % ksobj
+
+# ---------------------------------------------------------------------------- #
+
+def main():    
+# parse the command line options and arguments:
     opts, args = parse_cmdline(sys.argv)
+
+# set log levels for our rhn session
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     try:
-        # initialiase an RHN Session
+# initialiase an RHN Session
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
-                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logfile = opts.logfile, logenable = True,
                                 logname = os.path.basename(sys.argv[0]))
 
         if opts.verbose:
@@ -198,67 +251,70 @@ if __name__ == '__main__':
         if opts.debug:
             RHN.enableDebug()
             
-        # collect some information from the satellite for later use:
-        # a list of all existing kickstart profiles:
+# collect some information from the satellite for later use:
+# a list of all existing kickstart profiles:
         RHN.logInfo("Enumerating kickstart profiles")
-
         all_kickstarts = kickstart.listKickstarts(RHN)
 
-        # just their labels for 'does this exist?' and '--list' options
-        ks_labels = [ x.get('label') for x in all_kickstarts ]
+# selecting kickstarts for export or listing
+# here we generate a list of kickstart objects (dicts)
 
-        # an empty list, to which we append each kickstart we are extracting
-        kickstart_details = []
-
-        if opts.list:
-            print '\n'.join( [ x['label'] for  x in all_kickstarts ])
-            sys.exit(0)
-        # DO STUFF
+# first, did we explicitly select profiles? - only use them if they exist :)
         if opts.kickstart:
-            for kslabel in opts.kickstart.split(','):
-                if kslabel in ks_labels:
-                    ksobject = [ x for x in all_kickstarts if x.get('label') == kslabel ][0]
-                    kickstart_details.append(get_ks_details(RHN, ksobject, opts.verbose))
-                else:
-                    RHN.logError("cannot locate kickstart label %s, does it really exist?" % kslabel)
-                    RHN.logInfo("skipping %s for the time being" % kslabel)
-                    continue
+            export_list = [ x for x in all_kickstarts if x['label'] in opts.kickstart.split(',') ]
 
-        # are we dumping all kickstart profiles?
-        if opts.all:
-            if opts.verbose:
-                RHN.logInfo("processing all kickstarts. This could take a while")
-            for ksobject in all_kickstarts:
-                RHN.logInfo("processing kickstart %s" % ksobject['label'])
-                kickstart_details.append(get_ks_details(RHN, ksobject, opts.verbose))
+# if not, did we specify a wildcard?
+        elif opts.glob:
+            export_list = [ x for x in all_kickstarts if fnmatch(x['label'], opts.glob) ]
 
-        # is this just a test to show what would be done?
-        if opts.not_really:
-            pprint(kickstart_details)
+# failing that, we dump all kickstarts on the satellite
+        else:
+            RHN.logInfo("No label or glob pattern specified, processing all kickstarts. This may be a long process.")
+            export_list = all_kickstarts
+
+# for reporting later
+        export_labels = [ x['label'] for x in export_list ]
+
+# are we just listing kickstart profiles?
+        if opts.list:
+            ks_table(export_list)
             sys.exit(0)
 
-        # did we specify an output file?
+        for ksobject in export_list:
+            data = (get_ks_details(RHN, ksobject, opts.verbose))
+            ksobject.update(data)
+             
+# is this just a test to show what would be done?
+        if opts.test:
+            pprint(export_list)
+            sys.exit(0)
+
+# did we specify an output file?
         if opts.file:
             outputfile = opts.file
+# if not, try naming it after the kickstart profiles we chose            
+        elif opts.kickstart:
+            outputfile = '%s.json' % '_'.join(export_labels)
+# failing that, just use a timestamp            
         else:
-            if opts.all:
-                outputfile = 'all-kickstarts.json'
-            elif opts.kickstart :
-                outputfile = '%s.json' % '_'.join(opts.kickstart.split(','))
+            outputfile = "kickstart-export-%s.json" % time.strftime("%Y-%m-%d_%H%M%S")
 
-        # did we successfully extract at least one kickstart?
-        if len(kickstart_details)  != 0:
-            # dump_to_file(outputfile, kickstart_details, opts.verbose)
-            utils.dumpJSON(kickstart_details, outputfile, verbose=opts.verbose)
+# did we successfully extract at least one kickstart?
+        if len(export_list)  != 0:
+            if utils.dumpJSON(export_list, outputfile, verbose=opts.verbose):
+                RHN.logInfo("succesfully exported kickstarts to %s" % outputfile)
+            else:
+                RHN.logError("Failed to export kickstarts to %s. Check permissions?" % outputfile)
         else:
             RHN.logFatal("None of the chosen kickstart labels could be successfully dumped")
         
-    # handle CTRL-C in the middle of the process
+# handle CTRL-C in the middle of the process
     except KeyboardInterrupt:
         print "operation cancelled\n"
         sys.exit(1)
 
+if __name__ == '__main__':
+    main()
 
-    
-    
-    
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
