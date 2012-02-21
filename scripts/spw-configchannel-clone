@@ -44,6 +44,7 @@ import os
 import re
 import time
 from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
 
 # -------------------------- custom module imports --------------------------- #
 import rhnapi
@@ -68,6 +69,7 @@ def parse_cmdline(argv):
     """
     preamble = """Clone a configuration channel as part of a release or promotion workflow. Or just for kicks.
 This script can cause damage to your satellite and should be used with care.
+
     """
     usagestr = "%prog [OPTIONS] SOURCECHANNEL DESTCHANNEL"
     # initialise our parser and set some default options
@@ -94,23 +96,45 @@ This script can cause damage to your satellite and should be used with care.
     # script-specific options
     ccgrp = OptionGroup(parser, "Configuration Channel Options")
     ccgrp.add_option("--list", action="store_true", default=False,
-        help="just list existing config channel labels and exit")
+        help="List existing config channel labels and exit. In combination with --regex, also shows clone labels that would be created.")
     ccgrp.add_option("-u","--update", action="store_true", default = False,
-        help="Update existing channels, rather than skipping them. Use with caution.")
+        help="Update the content of existing destination channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-r","--replace", action="store_true", default = False,
-        help="Replace (delete and recreate) existing channels, rather than skipping them. Use with caution.")
+        help="Replace (delete and recreate) existing destination channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-x", "--regex", default = False, action = "store_true",
-        help = "SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. Single quote them! Use with extreme caution.")
+        help = "SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. Single quote them! Use with extreme caution. use --list first")
+    ccgrp.add_option("-g", "--glob", help = "Shell-style glob pattern for selecting source channels")
+    ccgrp.add_option("-p", "--prefix", help = "Prefix to prepend to source channel label to form clone label")
+    ccgrp.add_option("-s", "--suffix", help = "Suffix to append to source channel label to form clone label")
 
     parser.add_option_group(ccgrp)
     # add debug option for xmlrpc errors
 
     opts, args = parser.parse_args(argv)
+    def error(lines, ecode=1):
+        """
+        Error process
+        takes a list of lines and an optional exit code
+        """
+        print '\n'.join(lines)
+        parser.print_help()
+        sys.exit(ecode)
+
     # so sanity-chacking stuff here
+    # checking involces
+# valid combinations:
+# glob requires 
+    if opts.glob and not (opts.prefix or opts.suffix or opts.list):
+        error(["ERROR: insufficient arguments",
+               "--glob requires --prefix or --suffix unless in --list mode"])
+    
+    if opts.regex and len(args) != 2:
+        error(["ERROR: --regex requires both pattern and replacement arguments"])
+
     if len(args) != 2 and not opts.list: 
             print "we require both source and destination channel labels"
             parser.print_help()
-            sys.exit(1)
+            sys.exit(1)            
 
     # finally return the cleaned options and args
     return opts, args
@@ -204,6 +228,7 @@ def process_error(msg, logger, errorlist):
     logger.error(msg.strip())
 
 
+
         
 # ---------------------------------------------------------------------------- #
 
@@ -242,26 +267,36 @@ def main():
         # get a list of all existing channels - allows us to check for existing channels.
         existing_labels = [ x['label'] for x in configchannel.listGlobals(RHN) ]
 
+# ------------------ Generate list of source channel labels ------------------ #
 # reduce source and target channels regex search and replace
         if opts.regex:
             src_re = re.compile(r'%s' % args[0].decode('string-escape'))
             dst_patt = args[1].decode('string-escape')
+
             source_labels = [ x for x in existing_labels if src_re.search(x) ]
             dest_labels = [ src_re.sub(dst_patt, x) for x in source_labels ]
-            maxlen = max([ len(x) for x in source_labels])
-            fmtstr = "%%-%ds => %%s" % maxlen
-# if we only want a list of regex replacements
-            if opts.list:
-                print "Channels matching regex ( => destination channel)"
-                print "==========================================="
+        elif opts.glob:
+            source_labels = [ x for x in existing_labels if fnmatch(x, opts.glob)]
+            # let's start with the same as the source list
+            dest_labels = list(source_labels)
+        
+        if opts.prefix:
+            dest_labels = [ '%s-%s' %(opts.prefix, x) for x in dest_labels ]
+        if opts.suffix:
+            dest_labels = [ '%s-%s' %(x, opts.suffix) for x in dest_labels ]
+
+        if opts.list:
+            if source_labels == dest_labels:
+                print "Existing Configuration Channels"
+                print "================================================="
+                print "\n".join(source_labels)
+            else:
+                maxlen = max([ len(x) for x in source_labels])
+                fmtstr = "%%-%ds => %%s" % maxlen
+                print "Matched Channels  ( => destination channel)"
+                print "================================================="
                 for pair in zip(source_labels, dest_labels):
                     print fmtstr % pair
-                sys.exit(0)
-# listing without --regex                
-        elif opts.list:
-            print "Existing Configuration Channels"
-            print "==========================================="
-            print '\n'.join(existing_labels)
             sys.exit(0)
 # now we have no --list or --regex
         else:
