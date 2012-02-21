@@ -34,8 +34,6 @@ __author__ = "Stuart Sears <stuart@sjsears.com>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
 import sys
-# testing
-sys.path.insert(0, '/home/ssears/scripts/newscripts/python-rhnapi')
 import os
 import time
 from pprint import pprint
