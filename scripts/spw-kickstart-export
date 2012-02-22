@@ -243,7 +243,7 @@ def main():
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(sys.argv[0]))
+                                logname = os.path.basename(sys.argv[0]), loglevel = rhnloglevel)
 
         if opts.verbose:
             RHN.enableVerbose()
