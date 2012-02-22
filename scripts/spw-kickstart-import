@@ -23,21 +23,24 @@
 
 
 __doc__ = """
-a script to import kickstart profiles from a JSON dump file
-created by the companion export-kickstarts.py script
+spw-kickstart-import
 
-this has only been slightly tested but appears to work
-as with all unsuppoted scripts, backup your satellite DB
-before running this, as it may have unforseen effects.
+a script to import kickstart profiles from a JSON dump file
+created by the companion spw-kickstart-export.py script
+
+This script has been tested with RHN satellite 5.4.1 but may have unforseen effects.
+Use with caution and backup your satellite database before using it.
 """
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
+# --------------------- Python Standard Library Modules ---------------------- #
 import sys
 import os
+import re
 from optparse import OptionParser, OptionGroup
 from pprint import pprint
 
-# custom module imports (check they're on your pythonpath)
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import kickstart
 from rhnapi import activationkey
@@ -45,19 +48,28 @@ from rhnapi import configchannel
 from rhnapi import systemgroup
 from rhnapi import utils
 
+# --------------------------- Script Configuration --------------------------- #
 
+# server hostname and config file location
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
+
+# authentication information
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
+
+# script-specific configuration
 
 # for adding new profiles, we require a root password.
 # This is overridden when we set the 'advanced options'
 # so can be anything we want. 
 TEMP_ROOT_PW = 'iwuebfwoeipfh'
 
-# --------------------------------------------------------------------------------- #
+# regex for stripping off org prefixes on activation keys
+org_pattern = re.compile(r'(^[\d]+)-(.*)$')
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -67,9 +79,11 @@ def parse_cmdline(argv):
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+        help = "increase verbosity. Sets loglevel to INFO")
+#    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+#        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -79,15 +93,17 @@ def parse_cmdline(argv):
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
     ksgrp = OptionGroup(parser, "Kickstart-specific options")
-    ksgrp.add_option("--list", action="store_true", default=False, help="List kickstart labels in the specified file and exit")
+    ksgrp.add_option("-g", "--glob", help = "Shell-style glob patterns for kickstart selection and listing") 
     ksgrp.add_option("-k", "--kickstart", help="kickstart label to import from local file. Default: import ALL kickstarts in file")
-    ksgrp.add_option("-n", "--not-really", action="store_true", default=False, help="DRY RUN. Pretty print data to stdout")
     ksgrp.add_option("-i", "--interactive", action="store_true", default=False, help="Ask whether to create missing elements [%default]")
-    ksgrp.add_option("-p", "--pretty-print", dest = "printonly", action="store_true", default=False, help="Simply pretty-print the chosen kickstart object(s) [%default]")
+    ksgrp.add_option("--list", action="store_true", default=False, help="List matching kickstart labels from the input file and exit. Affected by --kickstart and --glob")
+    ksgrp.add_option("--test", action="store_true", default=False, help="DRY RUN. Pretty print data to stdout")
     # disabled these two for the time being as the code hasn"t been written yet
     # ksgrp.add_option("-r", "--replace", action="store_true", default=False, help="replace kickstarts on satellite with those in file (only if names match) DANGEROUS.")
     # ksgrp.add_option("-R", "--rename", action="store_true", default=False, help="offer to rename imported kickstart profiles if there is a name clash.")
@@ -97,7 +113,7 @@ def parse_cmdline(argv):
     opts, args = parser.parse_args()
     # expect the JSON file as first argument
     if len(args) != 1:
-        print "Insufficient information provided: no FILENAME"
+        print "ERROR: Insufficient information provided: no FILENAME"
         parser.print_help()
         sys.exit(1)
 
@@ -109,7 +125,7 @@ def parse_cmdline(argv):
     ''# finally...
     return opts, args
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     """
@@ -127,66 +143,58 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     #    ksobject['ks_tree']               = kickstart.getKickstartTree(rhn, kslabel)
     # assuming the object already exists, fetch the label for ease of typing:
     kslabel = ksobject.get('label')
-    if verbose:
-        print "processing kickstart label %s" % kslabel
+    rhn.logInfo("Processing kickstart label %s" % kslabel)
     #    ksobject['child_channels']        = kickstart.getChildChannels(rhni, kslabel)
-    if verbose:
-        print "setting child channel subscriptions"
+    rhn.logDebug("* setting child channel subscriptions")
     if kickstart.setChildChannels(rhn, kslabel, ksobject['child_channels']):
-        print "child channels set"
+        rhn.logInfo("child channels set")
     #    ksobject['partitioning_scheme']   = kickstart.getPartitioningScheme(rhn, kslabel)
-    if verbose:
-        print "processing advanced options"
+    rhn.logDebug("processing advanced options")
     if kickstart.setAdvancedOptions(rhn, kslabel, ksobject['advanced_opts']):
-        print "advanced options successfully imported"
+        rhn.logInfo("advanced options successfully imported")
 
-    if verbose:
-        print "setting partitioning scheme"
+    rhn.logDebug("setting partitioning scheme")
     if kickstart.setPartitioningScheme(rhn, kslabel, ksobject['partitioning_scheme']):
-        print "Partitioning scheme successfully imported."
+        rhn.logInfo("Partitioning scheme successfully imported.")
 
-    if verbose:
-        print "setting software list"
+    rhn.logDebug("setting software list")
     if kickstart.setSoftwareList(rhn, kslabel, ksobject['software_list']):
-        print "software list added to kickstart"
+        rhn.logInfo("software list added to kickstart")
+# this appears to have changed since the script was written.
+# updating it to work with 5.4.1
+# getCustomOptions returns a list of {'name' : 'custom', 'arguments' : line_content}
+# but setCustomOptions wants a list of str, one per line. Dumb.
+    rhn.logDebug("setting custom kickstart options")
+    custopts = [ x.get('arguments', '') for x in ksobject['custom_opts'] ]
+    if kickstart.setCustomOptions(rhn, kslabel, custopts):
+        rhn.logInfo("Custom Options successfully imported")
 
-    if verbose:
-        print "setting custom kickstart options"
-    if kickstart.setCustomOptions(rhn, kslabel, ksobject['custom_opts']):
-        print "Custom Options successfully imported"
-
-    if verbose:
-        print "adding pre and post scripts"
+    rhn.logDebug("adding pre and post scripts")
     for script in ksobject['script_list']:
         res = kickstart.addScript(rhn, kslabel, script['contents'], script['script_type'], script['chroot'], script['interpreter'])
         if isinstance(res, int):
-            print "added %s script number %d" % (script['script_type'], res)
+            rhn.logInfo("added %s script number %d" % (script['script_type'], res))
         else:
-            print "failed to add %s script, continuing anyway % script['type']"
+            rhn.logErr("failed to add %(type)s script, continuing anyway" % script)
             print res
             continue
-
-    if verbose:
-        "print importing IP ranges for bare-metal kickstart"
+    rhn.logDebug("importing IP ranges for bare-metal kickstart")
     for iprange in ksobject['ip_ranges']:
         if kickstart.addIpRange(rhn, kslabel, iprange['min'], iprange['max']):
-            print "added ip range %s-%s" %(iprange['min'], iprange['max'])
+            rhn.logInfo("added ip range %(min)s-%(max)s" % iprange)
         else:
-            print "failed to add ip range %s-%s, continuing" %(iprange['min'], iprange['max'])
+            rhn.logErr("failed to add ip range %(min)s-%(max)s, continuing" % iprange)
             continue
 
-    if verbose:
-        print "importing custom variable list"
+    rhn.logDebug("importing custom variable list")
     if kickstart.setVariables(rhn, kslabel, ksobject['variable_list']):
-        print "sucessfully imported custom variables. Please check them for sanity"
+        rhn.logInfo("sucessfully imported custom variables. Please check them for sanity")
     #    ksobject['reg_type']              = kickstart.getRegistrationType(rhn, kslabel)
-    if verbose:
-        print "setting post-build registration type"
+    rhn.logDebug("setting post-build registration type")
     if kickstart.setRegistrationType(rhn, kslabel, ksobject['reg_type']):
-        print "sucessfully set post-build registration to %s" % ksobject['reg_type']
+        rhn.logInfo("sucessfully set post-build registration to %(reg_type)s" % ksobject)
     #    ksobject['file_preservations']    = kickstart.listFilePreservations(rhn, kslabel)
-    if verbose:
-        print "importing file preservations"
+    rhn.logDebug("importing file preservations")
     if len(ksobject['file_preservations']) != 0:
         add_fpres = []
         for fpres in ksobject['file_preservations']:
@@ -194,68 +202,64 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
                 add_fpres.append(fpres['name'])
             else:
                 if interactive:
-                    res = utils.promptConfirm('create missing file preservation list %s' % fpres['name']) 
+                    res = utils.promptConfirm('create missing file preservation list %(name)s' % fpres) 
                 else:
                     res = True
 
                 if res:
                     if kickstart.createFilePreservation(rhn, fpres['name'], fpres['file_names']):
-                        print "file preservation created"
+                        rhn.logInfo("file preservation list %(name)s created" % fpres)
                         # add it to the global list for future use
                         existing_file_preservations.append(fpres['name'])
                         # add it to our list
                         add_fpres.append(fpres['name'])
                     else:
-                        print "could not create missing file preservation list %s, skipping" % fpres['name']
+                        print "could not create missing file preservation list %(name)s, skipping" % fpres
                         continue
         # now we have a list of existing preservations to add, let's add them!
         for fp in add_fpres:
             if kickstart.addFilePreservations(rhn, kslabel, [ fp ]):
-                print "added file preservation '%s'" % fp
+                rhn.logInfo("added file preservation '%s'" % fp)
             else:
-                print "unable to add file preservation %s, skipping" % fp
+                rhn.logErr("unable to add file preservation %s, skipping" % fp)
                     
 
     if ksobject['config_mgmt']:
-        if verbose:
-            print "enabling configuration management"
+        rhn.logDebug("enabling configuration management")
         if kickstart.enableConfigManagement(rhn, kslabel):
-            print "COnfiguration Management enabled"
+            rhn.logInfo("COnfiguration Management enabled")
 
     if ksobject['remote_cmds']:
-        if verbose:
-            print "enabling remote commands"
+        rhn.logDebug("enabling remote commands")
         if kickstart.enableRemoteCommands(rhn, kslabel):
-            print "Remote Commands Enabled"
+            rhn.logInfo("Remote Commands Enabled")
     #    ksobject['activation_keys']       = kickstart.getActivationKeys(rhn, kslabel)
     # run through the activation keys in our stored kickstart structure
     # 1. if they exist in the satellite, add them to the kickstart
     # 2. if they don't exist, try to create them in the satellite first
     # 3. else, FAIL and say so
 
-    if verbose:
-        print "processing activation keys"
+    rhn.logDebug("processing activation keys")
     for akey in ksobject['activation_keys']:
-        # assume existing keys with the correct 'name' and description are okay.
+        # assume existing keys with the correct 'name' and 'description' are okay.
         if (akey['description'], akey['key']) in existing_act_keys:
-            print "activation key '%s' (%s)  exists on your satellite, adding it to the kickstart" % (akey['description'], akey['key'])
+            rhn.logInfo("activation key '%(description)s' (%(key)s)  exists on your satellite, adding it to the kickstart" % akey)
             if kickstart.addActivationKey(rhn, kslabel, akey['key']):
-                print "successfully added key %s" % akey['key']
+                rhn.logInfo("successfully added key %(key)s" % akey)
         else:
             if interactive:
-                res = utils.promptConfirm("activation key '%s (%s)' does not appear to already exist. Create it" % (akey['description'], akey['key']))
+                res = utils.promptConfirm("activation key '%(description)s (%(key)s)' does not appear to already exist. Create it?" % akey)
             else:
                 res = True
             if res:
                 if create_activation_key(rhn, akey, interactive, verbose):
                     kickstart.addActivationKey(rhn, kslabel, akey['key'])
                 else:
-                    print "key %s does not exist and we couldn't create it. Skipping it."
+                    rhn.logErr("key %s does not exist and we couldn't create it. Skipping it.")
                     continue
 
     #    ksobject['gpg_ssl_keys']          = kickstart.listKeys(rhn, kslabel)
-    if verbose:
-        print "processing GPG and SSL keys"
+    rhn.logDebug("processing GPG and SSL keys")
     # run through the crypto keys in our kickstart JSON structure and
     # 1. check if they already exist in satellite.
     # 2. if so, add them to our kickstart
@@ -265,21 +269,20 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     for akey in ksobject['gpg_ssl_keys']:
         if akey['description'] in existing_crypto_keys:
             if kickstart.addCryptoKeys(rhn, kslabel, akey['description']):
-                print 'added key "%s"' % akey['description']
+                rhn.logInfo('added key "%(description)s"' % akey)
         elif create_crypto_key(rhn, akey, interactive, verbose):
-            print "created new stored cryptokey %s" % akey['description']
+            rhn.logInfo("created new stored cryptokey %(description)s" % akey)
             if kickstart.addCryptoKeys(rhn, kslabel, akey['description']):
-                print 'added key "%s"' % akey['description']
+                rhn.logDebug('added key "%(description)s"' % akey)
         else:
-            if verbose:
-                print "key %s does not exist and I couldn't create it. skipping..." % akey['description']
+            rhn.logDebug("key %(description)s does not exist and I couldn't create it. skipping..." % akey)
             continue
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     """
-    creates an activation key so we can assign it to a kickstart
+    creates an activation key from a dict structure.
     This is complex... we have to
     1. create the key
     2. add base and child software channels
@@ -290,76 +293,95 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     5. set group memberships
        - missing groups are created by name
     """
-    if verbose:
-        print "creating activation key '%s' (%s)" %(keyinfo['description'], keyinfo['key'])
-        rhn.enableDebug()
-    # remove the org prefix from the key (the satellite will add this for us)
-    mykey = keyinfo['key'].split('-')[1]
+    rhn.logInfo("creating activation key '%(description)s' (%(key)s)" % keyinfo)
+
+# remove the org prefix from the key (the satellite will add this for us)
+# if our key starts with NUMBER(S)-, this represents the org. Strip them off.
+# this is fairly simplistic, but should do the trick most of the time, as we are only really
+# expecting to import keys from a file whose format we control.
+    rematch = org_pattern.match(keyinfo['key'])
+    if rematch:
+        rhn.logDebug("* Removing org prefix from key for import.")
+# the groups will look like this in a matching key:
+# key: 1-7880d5086175346802f137fed1dafe2f, groups = ('1', '7880d5086175346802f137fed1dafe2f')
+# regex is used to allow for
+# 1. non-org keys (just in case)
+# 2. orgs >= 10
+        mykey = rematch.groups()[1]
 
     # now try to create it. There is more than one way to do this, depending on
     # whether you specify a usage limit or not.
-    if keyinfo['usage_limit'] != 0:
-        keyid = activationkey.create(rhn,
-                        mykey,
-                        keyinfo['description'],
-                        keyinfo['base_channel_label'],
-                        keyinfo['entitlements'],
-                        usagelimit = keyinfo['usage_limit'],
-                        universalDefault = keyinfo['universal_default'])
-    else:
-        keyid = activationkey.create(rhn,
-                        mykey,
-                        keyinfo['description'],
-                        keyinfo['base_channel_label'],
-                        keyinfo['entitlements'],
-                        universalDefault = keyinfo['universal_default'])
-    if keyid != False:
-        if verbose:
-            print "key created" 
+    keyid = activationkey.create(rhn,
+                                 keyinfo['description'],
+                                 mykey,
+                                 basechannel=keyinfo['base_channel_label'])
+    
+    if keyid:
+        rhn.logDebug("key %(key)s created" % keyinfo)
+
+        if len(keyinfo['entitlements']) > 0:
+            rhn.logInfo("Adding entitlements '%s' to key" % ','.join(keyinfo['entitlements']) )
+            if activationkey.addEntitlements(rhn,keyid, keyinfo['entitlements']):
+                rhn.logDebug("Entitlements set appropriately")
 
         # add the key to our global activation key list to avoid having to do this again
-
         existing_act_keys.append( (keyinfo['description'], keyid) )
 
-        print "adding child channels to key %s" % keyid    
-        if activationkey.addChildChannels(rhn, keyid, keyinfo['child_channel_labels']):
-            print "child channels successfully added"
+        if len(keyinfo['child_channel_labels']) > 0:
+            rhn.logInfo("Adding child software channels")
+            if activationkey.addChildChannels(rhn, keyid, keyinfo['child_channel_labels']):
+                rhn.logDebug("child channels successfully added")
             
-        print "adding packages"
-        if activationkey.addPackages(rhn, keyid, keyinfo['packages']):
-            print "packages added"
+        if len (keyinfo['packages']) > 0:
+            rhn.logInfo("Adding packages")
+            # add packages one at a time to aid logging
+            for pkg in keyinfo['packages']:
+                if activationkey.addPackages(rhn, keyid, [ pkg ]):
+                    try:
+                        rhn.logDebug("* %(name)s [%(arch)s] added" % pkg )
+                    except KeyError:
+                        rhn.logDebug("* %(name)s added" % pkg)
+                else:
+                    rhn.logError("ERROR: Failed to add package %(name)s - does it exist?" % pkg)
 
         # add configuration channels to the key (if they exist)
 
-        print "adding configuration channels to activation key (only if they exist)"
+        rhn.logInfo("adding (existing) configuration channels to activation key")
         configlabels = []
 
         # check that the config channels exist
         for chan in keyinfo['config_channels']:
             if configchannel.channelExists(rhn,chan['label']):
+                rhn.logDebug("Configuration channel %(label)s exists, appending to our 'add' list" % chan)
                 configlabels.append(chan['label'])
             else:
-                print "config channel label %s does not exist locally, skipping it."
+                rhn.logError("ERROR: config channel label %(label)s does not exist locally, skipping it." % chan)
                 continue
-        if len(configlabels) != 0:        
-            if activationkey.addConfigChannels(rhn, [ keyid ] , configlabels):
-                print "added configuration channels to key"
 
-        # process the config deployment checkbox (value = 1/0)
+# did we find any of the specified configuration channels?
+        if len(configlabels) != 0:        
+            if activationkey.addConfigChannels(rhn, [ keyid ], configlabels):
+                for c in configlabels:
+                    rhn.logDebug("added configuration channel %s to key" % c)
+
+# process the config deployment checkbox (value = 1/0)
         if keyinfo['config_deploy'] == 1:
-            res = activationkey.enableConfigDeployment(rhn, keyid)
+            if activationkey.enableConfigDeployment(rhn, keyid):
+                rhn.logInfo("* Enabled config deployment")
         else:
-            res = activationkey.disableConfigDeployment(rhn, keyid)
-        if res:
-            print "set configuration management deployment"
-        if verbose:
-            print "processing system group memberships"
+            if activationkey.disableConfigDeployment(rhn, keyid):
+                rhn.logInfo("* Disabled config deployment")
+# process system groups - create them by name if missing on the local satellite
+# prompt for confirmation of this if in --interactive mode
+        rhn.logInfo("Processing system group memberships")
         if keyinfo.has_key('server_groups'):
             add_groups = []
             for grp in keyinfo['server_groups']:
                 if grp['name'] in existing_system_groups:
+                    rhn.logInfo("- Server Group %(name)s exists locally, adding it" % grp )
                     add_groups.append(grp)
                 else:
+                    rhn.logError("ERROR: server group %(name)s does not exist locally")
                     # are we in interactive mode? This is passed all the way own from our commandline options
                     if interactive:
                         res = utils.promptConfirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
@@ -369,22 +391,23 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                     if res:
                         newgrp = create_group(rhn, grp)
                         if newgrp is not None:
-                            print "group created"
+                            rhn.logDebug("group '%(name)s' created" % newgrp)
                             existing_system_groups.append(newgrp['name'])
                             add_groups.append(newgrp)
                         else:
                             print "could not create group %s, skipping" % grp
                             continue
             for grp in add_groups:
-                if verbose:
-                    print "Adding existing system groups to key"
+                rhn.logDebug("Adding existing system groups to key")
                 if activationkey.addGroupsByName(rhn, keyid, grp['name']):
                     print "added group %s" % grp['name']
+        else:
+            rhn.logInfo("No system group memberships specified.")
         return True
     else:
         return False
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_group(rhn, groupinfo):
     """
@@ -397,7 +420,7 @@ def create_group(rhn, groupinfo):
     else:
         return None
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_crypto_key(rhn, keyinfo, interactive = False, verbose = False):
     """
@@ -405,7 +428,7 @@ def create_crypto_key(rhn, keyinfo, interactive = False, verbose = False):
     """
     return kickstart.createCryptoKey(rhn, keyinfo['description'], keyinfo['type'], keyinfo['content'])
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def remove_ks(rhn, kslabel):
     """
@@ -414,16 +437,16 @@ def remove_ks(rhn, kslabel):
     """
     return kickstart.deleteProfile(rhn, kslabel)
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def create_ks(rhn, ksobject, verbose = False):
     """
     Create a new basic KS profile with the bare minimal info
     createProfile(rhn, ksLabel, ksTree, rootPass, ksHost='', vtType='none')
     """
-    return kickstart.createProfile(RHN, ksobject['label'], ksobject['ks_tree'],TEMP_ROOT_PW)
+    return kickstart.createProfile(rhn, ksobject['label'], ksobject['ks_tree'],TEMP_ROOT_PW)
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
 def rename_ks(ksobject, newname, verbose = False):
     """
@@ -440,9 +463,25 @@ def rename_ks(ksobject, newname, verbose = False):
     
     return ksobject
     
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
-if __name__ == '__main__':
+def ks_table(ksobjlist):
+    """
+    Produce a pretty table from a list of kickstart objects
+    """
+    maxlen = utils.getMaxLen(ksobjlist)
+    # use our dict of field lengths to produce a format string for each line
+    fmtstr = "%%(label)-%(label)ds %%(name)-%(name)ds %%(tree_label)s" % maxlen
+    # print a header
+    print fmtstr % {'label' : 'Label', 'name' : 'Name', 'tree_label': 'Kickstart Tree'}
+    print fmtstr % {'label' : '-----', 'name' : '----', 'tree_label': '--------------'}
+    # for each kickstart, print out a formatted line:
+    for ksobj in ksobjlist:
+        print fmtstr % ksobj
+
+# ---------------------------------------------------------------------------- #
+
+def main():
     """
     This script is intended to do the following:
     1. load a list of kickstart structures from a JSON file (exported by its companion script, kickstart2json)
@@ -463,9 +502,13 @@ if __name__ == '__main__':
     """
     
     opts, args = parse_cmdline(sys.argv)
-    # initialiase an RHN Session
-    # print "This is under heavy development and is currenttly non-functional"
-    # sys.exit(0)
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     try:
         # variables for existing server info
         global existing_act_keys
@@ -477,33 +520,31 @@ if __name__ == '__main__':
         # there are a number of tasks we can perfom which only require the local JSON file:
 
         ksobjects = utils.loadJSON(args[0])
-
-        local_labels = [ x.get('label') for x in ksobjects ]
-
-        if opts.verbose:
-            print "kickstart labels in file:"
-            print '\n'.join(local_labels)
+        import_labels = [ x.get('label') for x in ksobjects ]
 
         # if --list, we just read the data and dump a list of labels:
-        if opts.list:
-            print '\n'.join( [ x['label'] for  x in ksobjects ])
-            sys.exit(0)
 
-        # populate import_list with kickstart details we wish to import
-        import_list = []
-        # firstly,
-        # did we choose a kickstart profile (or list of them?)
+# did we choose a kickstart profile (or list of them?)
         if opts.kickstart:
             import_list = [ x for x in ksobjects if x['label'] in opts.kickstart.split(',') ]
-            if opts.verbose:
-                print import_list
-                
+
+# if not, did we provide a glob pattern?            
+        elif opts.glob:
+            import_list = [ x for x in ksobjects if fnmatch(x['label'], opts.glob) ]
+
+# failing that, we try to import all kickstarts from the JSON file            
         else:
             import_list = ksobjects
 
-        if opts.printonly:
+# do we only want to print out matching profiles?
+        if opts.list:
+            ks_table(import_list)
+            sys.exit(0)
+
+
+        if opts.test:
             for ksitem in import_list:
-                print '## ------------- Kickstart Details for %s ----------------- ##' % ksitem['label']
+                print '## ------------- Kickstart Details for %(label)s ----------------- ##' % ksitem
                 pprint(ksitem)
                 print
             sys.exit(0)
@@ -512,46 +553,41 @@ if __name__ == '__main__':
         # -- connect to RHN Satellite Server --- #
         if opts.verbose:
             print "Connecting to satellite server %s" % opts.server
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
-        if opts.verbose:
-            print "gathering information about existing elements..."
+
+        RHN.logInfo("Gathering information about existing elements")
         # get a list of existing kickstart profiles
-            print "1. Existing kickstarts...",
+        RHN.logDebug("Existing kickstarts")
         # this doesn't need to be global, we're only using it here...
         all_kickstarts = kickstart.listKickstarts(RHN)
-        if opts.verbose:
-            print "done"
         # suck just the labels out as these have to be unique
         remote_labels = [ x.get('label') for x in all_kickstarts ]
 
-        if opts.verbose:
-            print "2. Existing activation keys (can take a long time)...",
+        RHN.logDebug("Existing activation keys (can take a long time)")
         # make our list of activation keys accessible to all methods:
         existing_act_keys = activationkey.listActivationKeyNames(RHN)
-        if opts.verbose:
-            print "done"
 
-        if opts.verbose:
-            print "3. Existing Crypto (GPG and SSL) keys...",
+        RHN.logDebug("Existing Crypto (GPG and SSL) keys.",)
         existing_crypto_keys = [ x['description'] for x in kickstart.listAllCryptoKeys(RHN) ]
-        if opts.verbose:
-            print "done."
 
-        if opts.verbose:
-            print "4. Existing system groups...",
+        RHN.logDebug("Existing system groups.",)
         # we only care about the names...
         existing_system_groups = [ x['name'] for x in systemgroup.listAllGroups(RHN) ]
-        if opts.verbose:
-            print "done."
 
-        if opts.verbose:
-            print "5. Existing File Preservation Lists",
+        RHN.logDebug("Existing File Preservation Lists",)
         # we only care about the names...
         existing_file_preservations = [ x['name'] for x in kickstart.listAllFilePreservations(RHN) ]
-        if opts.verbose:
-            print "done."
 
         # ----------------- Now work with the JSON file ------------------------ #
 
@@ -561,20 +597,23 @@ if __name__ == '__main__':
         # now for the big job....
         for ksobject in import_list:
             if ksobject['label'] in remote_labels:
-                print "kickstart label %s already exists, skipping" % ksobject['label']
+                RHN.logErr("kickstart label %(label)s already exists, skipping" % ksobject)
                 continue
             if create_ks(RHN, ksobject):
                 set_ks_details(RHN, ksobject, opts.interactive, opts.verbose)
                 
             else:
-                print "unable to create kickstart %s" % ksobject['label']
+                RHN.logErr("unable to create kickstart %(label)s" % ksobject)
 
         
     except KeyboardInterrupt:
         print "operation cancelled"
         sys.exit(1)
 
+# ---------------------------------------------------------------------------- #
 
-    
-    
-    
+if __name__ == '__main__':
+    main()
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
