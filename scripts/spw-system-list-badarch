@@ -22,16 +22,20 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 """
+spw-system-list-unknownarch
+
 Lists all systems registered to your satellite which have packages flagged as being of 'unknown'  arch.
 This is a known issue with older satellite releases and older RHEL4 systems.
+
 """
-# standard library imports
+# --------------------- Python Standard Library Modules ---------------------- #
 import sys
+import os
 from optparse import OptionParser, OptionGroup
 from operator import itemgetter
 import time
 
-# custom module imports
+# -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import system
 
@@ -39,14 +43,23 @@ from rhnapi import system
 from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
 
 
-# configuration variables. Probably okay, actually.
+# --------------------------- Script Configuration --------------------------- #
+# server hostname and config file location
 RHNCONFIG = '~/.rhninfo'
 RHNHOST = 'localhost'
+
+# authentication info
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
 
-# --------------------------------------------------------------------------------- #
+# sortkey -> dictionary key mappings
+SORTMAPS = { 'name' : 'name',
+             'id'   : 'id',
+             'date' : 'last_checkin' }
+
+# ---------------------------------------------------------------------------- #
+
 def parse_cmdline(argv):
     """
     process the commandline :)
@@ -57,9 +70,11 @@ This is an artifact seen on older RHEL4 systems."""
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
-            help = "enable debug output for RHN session (XMLRPC errors etc")
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
-            help = "increase verbosity")
+        help = "increase verbosity. Sets loglevel to INFO")
+#    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+#        help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -69,66 +84,115 @@ This is an artifact seen on older RHEL4 systems."""
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
     rhngrp.add_option("--cache", action = "store_true", default = False,
         help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
     # script-specific options
+    sysgrp = OptionGroup(parser, "System Listing Options")
+    sysgrp.add_option("-d", "--sort-date", action="store_const", const="last_checkin", dest="sortkey",
+        help = "Sort the output table by last checkin date/time")
+    sysgrp.add_option("-i", "--sort-id", action="store_const", const="id", dest="sortkey",
+        help = "Sort the output table by system id")
+    sysgrp.add_option("-n", "--sort-name", action="store_const", const="name", dest="sortkey",
+        help = "Sort the output table by system profile name")
+    sysgrp.add_option("-r", "--reverse", action = "store_true", default = False,
+        help = "reverse sort order of output")
+    parser.add_option_group(sysgrp)
+
+    # set default values:
+    parser.set_defaults(sortkey="last_checkin", reverse=False)
 
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
 
+
     # finally...
     return opts, args
 
-# --------------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
-def pretty_system_list(syslist, sortkey, reverse=False):
+def system_table(syslist, sortkey, reverse=False):
     """
     prints a systemlist sorted by a given key
     """
-    for system in sorted(syslist, key = itemgetter(sortkey), reverse = reverse):
-        lcheck = time.strftime('%Y-%m-%d %H:%M:%S', time.strptime(str(system['last_checkin']), '%Y%m%dT%H:%M:%S'))
+    print "Systems that require re-registration"
+    maxlen = utils.getMaxLen(syslist)
+    fmtstr = "%%(id)-%(id)dr %%(name)-%(name)ds %%(last_checkin)-%(last_checkin)ds %%(base_channel)-%(base_channel)ds" % maxlen
+    print fmtstr % {'id' : 'System ID', 'name' : 'System Name', 'last_checkin' : 'Last Checkin Date', 'base_channel' :  'Base Software Channel'}
+    print fmtstr % {'id' : '---------', 'name' : '-----------', '------------' : '-----------------', '------------' :  '---------------------'}
+    pretty_system_list(failed_systems, 'name', reverse=False)
+    for box in sorted(syslist, key = itemgetter(sortkey), reverse = reverse):
+        print fmtstr % box
         print "%-12d %-22s %-18s %s" %(system['id'], system['name'], lcheck, system['base_channel'])
 
 
 
-# --------------------------------------------------------------------------------- #
-if __name__ == '__main__':
-    
+# ---------------------------------------------------------------------------- #
+
+def main():
     opts, args = parse_cmdline(sys.argv[1:])
+
+# set log levels for our RHN instance
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
     # initialise an RHN Session
-    # safety mechanism until the script actually works:
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password, config=opts.config, savecreds=opts.cache, debug=opts.debug)
-        # more fully-featured debug info
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
 
+        RHN.logInfo("Listing all registered systems")
         systemlist = system.listSystems(RHN)
         failed_systems = []
+        # set up our progressbar
         widgets = ['progress: ', Counter(), ' Systems [', Percentage(), ']', Bar(), '(', Timer(), ')']
-        print "Checking all systems for packages with arch 'Unknown'"
+        RHN.logInfo("Checking all systems for packages with arch 'Unknown'")
         pbar = ProgressBar(widgets=widgets, maxval=len(systemlist), term_width=80).start()
+        # process each registered system in turn
         for box in systemlist:
+            RHN.logDebug("processing system %(id)d - %(name)s" % box)
             count = systemlist.index(box) + 1
+            RHN.logDebug("Listing all packages on system %(name)s" % box)
             for pkg in system.listPackages(RHN,box['id']):
                 if pkg['arch'] == 'Unknown':
+                    RHN.logDebug("Unknown Arch Package found - failing system %(name)s" % box)
                     box['base_channel'] = system.getBaseChannel(RHN, box['id'])
+                    # convert last_checkin to a usable string.
+                    box['last_checkin'] = RHN.decodeDate(box['last_checkin'])
                     failed_systems.append(box)
                     break
             pbar.update(count)
         print 
 
         if len(failed_systems) > 0:
-            print "Systems that require re-registration"
-            print "System ID    System Name            Last Checkin Date  Base Software Channel"
-            print "----------   --------------------   -----------------  ---------------------"
-            pretty_system_list(failed_systems, 'name', reverse=False)
+            print "Found %d systems with 'unknown' arch packages" % len(failed_systems)
+            system_table(failed_system, sortkey, opts.reverse)
+        else:
+            print "No systems found with 'unknown' arch packages"
 
     except KeyboardInterrupt:
         print "operation cancelled"
         sys.exit(1)
 
+# ---------------------------------------------------------------------------- #
 
-    
-    
-    
+if __name__ == '__main__':
+    main()
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
