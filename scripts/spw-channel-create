@@ -137,18 +137,18 @@ def main():
         # get the existing channel list:
         RHN.logInfo("Enumerating existing channels on your satellite")
         chanlist     = channel.listAllChannels(RHN)
+        RHN.logDebug("Enumerating Base Channels")
+        # this just returns a list of base channel labels
+        basechannels = channel.listBaseChannels(RHN)
         chanlabels   = [ x['label'] for x in  chanlist ]
         # if a parent channel is specified, does it already exist?
-        if opts.parent:
-            RHN.logInfo("Enumerating existing base channels")
-            baselabels = [ x['label'] for x in chanlabels if x['parent_channel_label'] != '']
-            if opts.parent not in baselabels:
-                RHN.logError("Parent Channel '%s' does not exist." % opts.parent)
-                sys.exit(2)
+        if opts.parent and ( opts.parent not in basechannels ):
+            RHN.logError("Parent Channel '%s' does not exist. Aborting." % opts.parent)
+            sys.exit(2)
 
         # check if the desired label is already used
         if opts.channel in chanlabels:
-            RHN.logError("Channel label %s already exists. Please Choose an alternative" % channel)
+            RHN.logError("Channel label %s already exists. Please choose a different label." % channel)
             sys.exit(3)
 
         # okay, we have the information needed, let's try and create the channel
