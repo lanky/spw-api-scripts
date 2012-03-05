@@ -108,6 +108,8 @@ def query_from_filename(fname):
     parses a standard RPM filename (with or without the '.rpm' extension)
     returns a logical ANDed lucene query string like this:
     'name:"name" AND version:"version" AND...'
+
+    TODO: this is much simpler with rpmUtils.miscutils.splitFileName(str)
     """
     # an empty dict to store the values in - makes string formatting easier.
     pkginfo = {}
