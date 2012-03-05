@@ -1,0 +1,278 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright 2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+"""
+spw-channel-listpackages
+Lists versions of packages in a given channel
+Can accept shell glob patterns to specify packages
+and optionally only show the latest versions
+"""
+__author__ = "Your Name <email>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import re
+from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
+from operator import itemgetter
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import packages
+from rhnapi import utils
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+rhpatt = re.compile(r'^RH[BSE]A-\d{4}:\d{4}')
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    usagestr = "%prog [RHNOPTS] -c CHANNEL [PACKAGE...]"
+    preamble = """List packages in a given channel label - used to compare versions across channels.
+Currently only works with a single channel label. 
+Can optionally accept specific package names or shell wildcards to reduce the number of packages matched.    
+"""
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+# this is not implemented in most scripts, but if you want it...    
+#    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+#        help = "Disable all logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    changrp = OptionGroup(parser, "Channel and Package Options")
+    changrp.add_option("-c", "--channel", help = """Channel label to check packages against.
+Required. Can also take a shell-style glob, or a comma-separated list of globs or labels, without spaces.
+Multiple Channels can take a significant amount of time to process""")
+    changrp.add_option("-a", "--all", action = "store_true", default = False,
+        help = "Process ALL channels on your satellite. This will take absolutely AGES. Overrides -c/--channel")
+    changrp.add_option("-g", "--glob", action = "store_true", default = False,
+        help = "treat packagenames provided as args as shell globs (permits shell wildcards). Quote arguments with special characters in!")
+    changrp.add_option("-l", "--latest", action = "store_true", default = False,
+        help = "Only show the latest versions of packages matching the provided names")
+    changrp.add_option("-e", "--errata", action = "store_true", default = False,
+        help = "Also list providing errata for matching packages")
+    parser.add_option_group(changrp)
+
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+
+    if not opts.channel:
+        print "ERROR: no channel label provided"
+        parser.print_help()
+        sys.exit(1)
+    else:
+        opts.channel = opts.channel.split(',')
+
+
+    # finally...
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+def reduce_by_globs(globlist, packagelist, logger):
+    """
+    Reduces a list of package dicts to only those matching the globs
+    Handily, fnmatch will handle precise matches as well as globs.
+    """
+    # just return the list unaltered if no globs were provided
+    # otherwise we end up with an empty list
+    if len(globlist) == 0:
+        return packagelist
+    logger.info("Reducing package list using provided patterns")
+    results = []
+    for glob in globlist:
+        logger.info("Processing pattern '%s'" % glob)
+        res = [ x for x in packagelist if fnmatch(x['name'], glob) ]
+        logger.debug("Matched %d packages" % len(res) )
+        results.extend(res)
+
+    for p in results:
+        # for convenience printing later :)
+        p['nvrea'] = "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p
+
+    logger.info("Reduced packagelist to %d packages" % len(results))
+
+
+    return sorted(results, key=itemgetter('nvrea'))
+
+# ---------------------------------------------------------------------------- #
+
+def match_channels(rhnchannels, globlist):
+    """
+    processes a list of channels against a list of fnmatch globs.
+    Returns a list of channel labels that match
+    parameters:
+    rhnchannels(list[dict]) - list of channel dicts from RHN API calls
+    globlist(list[str])     - list of strings, channel labels or shell globs
+    """
+    results = []
+# in the curious situation where we have no channel labels provided. Unlikely.
+    if len(globlist) == 0:
+        return set([ x['label'] for x in rhnchannels])
+    for g in globlist:
+        results.extend([ x['label'] for x in rhnchannels if fnmatch(x['label'], g)])
+    # de-dupe using sets in case a channel was matched by more than one glob.
+    return set(results)
+
+# ---------------------------------------------------------------------------- #
+
+def print_results(pkglist, chanlabel, showerrata = False):
+    """
+    Prints a pretty-formatted table of results
+    """
+    maxlen = utils.getMaxLen(pkglist)
+# to avoid messed-up formatting when there are no errata present, set defaults for
+    for k in [ 'advisory', 'rhadvisory' ]:
+        if maxlen[k] < 14:
+            maxlen[k] = 14
+
+    if showerrata:
+        fmtstr = "%%(nvrea)-%(nvrea)ds %%(advisory)-%(advisory)ds %%(rhadvisory)-%(rhadvisory)ds" % maxlen
+    else:
+        fmtstr = "%%(nvrea)-%(nvrea)ds" % maxlen
+
+    print "Matching Packages in channel %s" % chanlabel
+    print fmtstr % {'nvrea' : 'Package NVRA', 'advisory' : 'Cloned Erratum', 'rhadvisory' : 'Red Hat Erratum' }
+    print fmtstr % {'nvrea' : '============', 'advisory' : '==============', 'rhadvisory' : '===============' }
+    for p in pkglist:
+        print fmtstr % p
+    print "--"        
+
+
+# ---------------------------------------------------------------------------- #
+
+def main():    
+    opts, args = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    # initialise an RHN Session
+    # safety mechanism until the script actually works:
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+        # find all the channels that match our given labels/globs. This is more expensive for a single channel label.
+        matching_channels = match_channels(channel.listAllChannels(RHN), opts.channel)
+        failed_channels = set([])
+        for chanlabel in matching_channels:
+            try:
+                if opts.latest:
+                    RHN.logInfo("listing latest packages in channel %s" % chanlabel)
+                    packagelist = channel.listLatestPackages(RHN, chanlabel)
+                else:
+                    RHN.logInfo("Listing all packages in channel %s" % chanlabel)
+                    packagelist = channel.listAllPackages(RHN, chanlabel)
+            except:
+                RHN.logErr("Unable to list packages for channel %s. Does it exist?" % chanlabel)
+                continue
+
+            matching_packages = reduce_by_globs(args, packagelist, RHN.logger)
+            if len(matching_packages) == 0:
+                RHN.logInfo("No matching packages for channel %s" % chanlabel)
+                failed_channels.add(chanlabel)
+                continue
+            if opts.errata:
+                RHN.logDebug("Processing Errata for matching packages")
+                channel_errata = [ x['advisory'] for x in channel.listErrata(RHN, chanlabel) ]
+                for p in matching_packages:
+                    advlist = [ x['advisory'] for x in packages.listProvidingErrata(RHN, p.get('id')) ]
+                    # if this is a cloned channel, there should only be one clone for any given RH Erratum
+                    advisory = [ a for a in advlist if a in channel_errata ] or ['None']
+                    # let's fetch the original erratum too, if it exists
+                    rhadvisory = [ a for a in advlist if rhpatt.match(a) ] or ['None']
+                    # this feels clunky, but works. There may be a better option
+                    p['advisory'] = advisory[0]
+                    p['rhadvisory'] = rhadvisory[0]
+            # print a channel summary                    
+            print_results(matching_packages, chanlabel, opts.errata)
+                
+
+        print "No packages matched the provided pattern in the following channels:"
+        print '\n'.join(failed_channels)
+
+        
+
+
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main()
+
+
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 nu ft=python:
