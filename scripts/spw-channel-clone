@@ -169,7 +169,7 @@ by doing a regex replacement on source channel label(s), useful for --child clon
                "no source channel label provided"])
     
     if not opts.dest:
-        if not ( opts.regex or opts.prefix):
+        if not ( opts.regex or opts.prefix or opts.suffix):
             error([ "ERROR: Insuffient information",
                     "You must provide either a destination channel label",
                     "or at least one of --regex, --prefix, or --suffix"])
@@ -200,7 +200,7 @@ by doing a regex replacement on source channel label(s), useful for --child clon
 
 # ---------------------------------------------------------------------------- #
 
-def label_to_name(label):
+def label_to_name(label, capwords = CAPWORDS, archwords = ARCHWORDS):
     """
     perform some basic substitutions on a string to make it suitable for a channel Name, rather than a label
     Essentially, this removes all the hyphens, uppercases RHEL, RHN, ES, AS, WS, title cases the rest.
@@ -210,9 +210,9 @@ def label_to_name(label):
     # arches = [ 'i386', 'x86_64' ]
     output = []
     for word  in re.split('[-_]', label):
-        if word in CAPWORDS:
+        if word in capwords:
             output.append(word.upper())
-        elif word in ARCHWORDS:
+        elif word in archwords:
             output.append(word)
         else:
             output.append(word.capitalize())
@@ -391,11 +391,12 @@ def main():
 # ----------------------------- Reporting output ----------------------------- #
 
         if opts.test:
-            maxsrc = max([ len(x.get('label')) for x in chanmaps ]) +2
-            maxdst = max([ len(x.get('clone_label')) for x in chanmaps ]) +2
+            maxsrc = max([ len(x.get('label')) for x in chanmaps ]) + 2
+            maxdst = max([ len(x.get('clone_label')) for x in chanmaps ]) + 2
             
             fmtstr = "%%(label)-%ds | %%(clone_label)-%ds" % (maxsrc, maxdst)
             print "TEST OUTPUT - NO CHANGES MADE"
+            print "Results of cloning command would  be as follows"
             print fmtstr % { 'label' : "Current Label", 'clone_label' : "Clone Label" }
             print "%s | %s " %('-' * maxsrc, '-' * maxdst)
             # Are we in recursive mode? if so, the first mapping is for parent channels
