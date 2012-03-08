@@ -225,7 +225,7 @@ def generate_clone_labels(srcchans, logger, regex = None, prefix = None, suffix 
     parses a list of channel dicts and adds a clone_label key,
     containing a munged label for the cloning process.
 
-    munging is performed in this order, the result of each feeding into the next
+    Munging is performed in this order, the result of each feeding into the next
     1. regex substitution (if any)
     2. prefix (if any)
     3. suffix (if any)
@@ -313,6 +313,7 @@ def main():
     """
     # Parse command line args and set loglevel
     opts, args = parse_cmdline(sys.argv[1:])
+
     # configure log verbosity
     if opts.debug:
         rhnloglevel = 10
@@ -337,6 +338,7 @@ def main():
             RHN.enableDebug()
 
 # --------------------------- Sanity Checking Code --------------------------- #
+
         # list of valid channel labels for checking source channel existence
         channels = [ x['label'] for x in channel.listSoftwareChannels(RHN) ]
         # this may be an inefficient approach
@@ -359,16 +361,15 @@ def main():
         # this is an exception to the if opts.parent block
         elif opts.recursive:
             childchannels = channel.listChildren(RHN, opts.source)
+            RHN.logDebug("Child Channels: %s" % '|'.join([ x['label'] for x in childchannels]))
+        # --exclude makes no sense outside of --recursive, so we do it here:
             if opts.exclude:
-                for c in childchannels:
-                    if c.get('label') in opts.exclude:
-                        RHN.logInfo("Channel %(label)s is excluded. Removing it from our channel list" % c)
-                        if opts.test:
-                            print "Excluding %(label)s" % c
-                        childchannels.remove(c)
+                RHN.logDebug("Excluding %s" % '|'.join(opts.exclude))
+                excluded = [ x for x in childchannels if x['label'] in opts.exclude ]
+                for chan in excluded:
+                    RHN.logInfo("Channel %(label)s is excluded. Removing it from our channel list" % chan)
+                    childchannels.remove(chan)
             source_channels.extend(childchannels)
-
-        # print "Cloning channels: %s" % '\n'.join(source_channels)
 
 # -------------------------- Recursive Cloning Code -------------------------- #
 
