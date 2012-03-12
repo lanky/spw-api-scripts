@@ -15,14 +15,14 @@ The Scripts Themselves
 These should all have -h/--help options (totally overengineered in this regard) and (might) do what they sound like.
 
 The scripts (at time of writing) by category
-## Activation Key Management
+*Activation Key Management*
 *   spw-activationkey-clone     - clones an activationkey according to options given
 *   spw-activationkey-delete    - deletes the provided list of activationkeys
 *   spw-activationkey-export    - exports activation keys to a JSON-format text file
 *   spw-activationkey-import    - imports all (or selected) activation keys from a text file 
 *   spw-activationkey-list      - lists activation keys and descriptions
 
-## Software Channel Management
+*Software Channel Management*
 *   spw-channel-clone           - clones a software channel.
                                   Allows for recursive cloning, regex substitution, prefix and suffix addition.
 *   spw-channel-create          - creates an empty software channel
@@ -34,25 +34,26 @@ The scripts (at time of writing) by category
 *   spw-channel-packageversions - shows all versions of a given package in specified channels. Supports shell globbing for both channel and package specification.
 *   spw-channel-patchsummary    - compares errata in a chosen channel or channel group (from config file) with its original source channel. Can specify
 
-## Configuration Channel Management
+*Configuration Channel Management*
 *   spw-configchannel-clone     - clones a configuration channel. Can use regex matching for source and destination. Cloned configuration channels lose revision history, but keep file revision numbers (so essentially a point-in-time snapshot of a given config channel)
 *   spw-configchannel-delete    - deletes the specified config channels and all their content. use with care.
 *   spw-configchannel-export    - export chosen configuration channel(s) to JSON-format text file
 *   spw-configchannel-import    - imports chosen configuration channel(s) from JSON-format text file.
 *   spw-configchannel-listfiles - lists content and properties of a given (or all) configuration channels
 
-## Kickstart Profile Management
+*Kickstart Profile Management*
 *   spw-kickstart-delete        - deletes the chosen kickstart profiles
 *   spw-kickstart-export        - exports chosen kickstart profile(s) to JSON text file
 *   spw-kickstart-import        - imports kickstart profiles from JSON text file
 
-## Software Package
+*Software Package*
 *   spw-package-listerrata      - finds errata for a given package name
+*   spw-package-audit           - compares a dump of 'rpm -qa' from a system to a software channel of your choice. Details older/newer packages etc
 
-## Errata Management
+*Errata Management*
 *   spw-errata-clone            - clones/publishes specified errata
 
-## System Management
+*System Management*
 *   spw-system-list-badarch     - lists systems with packages marked as of 'unknown' arch (finds old rhel4 systems which need updated RHN packages)
 
 
@@ -62,11 +63,11 @@ Authentication Configuration
   password/login as None essentially means 'prompt'
   see templates/rhninfo.template, but it looks like this:
 
-[DEFAULT]
-login=None
-password=None
+    [DEFAULT]
+    login=None
+    password=None
 
-[your.sat.server]
-login=xxxxxx
-password=None
+    [your.sat.server]
+    login=xxxxxx
+    password=None
 
