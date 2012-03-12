@@ -22,21 +22,15 @@ The scripts (at time of writing) by category
 
 Activation Key Management
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-*   spw-activationkey-clone
-    clones an activationkey according to options given
-*   spw-activationkey-delete
-    deletes the provided list of activationkeys
-*   spw-activationkey-export
-    exports activation keys to a JSON-format text file
-*   spw-activationkey-import
-    imports all (or selected) activation keys from a text file 
-*   spw-activationkey-list
-    lists activation keys and descriptions
+*   spw-activationkey-clone - clones an activationkey according to options given
+*   spw-activationkey-delete - deletes the provided list of activationkeys
+*   spw-activationkey-export - exports activation keys to a JSON-format text file
+*   spw-activationkey-import - imports all (or selected) activation keys from a text file 
+*   spw-activationkey-list - lists activation keys and descriptions
 
 Software Channel Management
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
-*   spw-channel-clone           - clones a software channel.
-                                  Allows for recursive cloning, regex substitution, prefix and suffix addition.
+*   spw-channel-clone           - clones a software channel. Allows for recursive cloning, regex substitution, prefix and suffix addition.
 *   spw-channel-create          - creates an empty software channel
 *   spw-channel-delete          - deletes a software channel. Use with caution.
 *   spw-channel-dumppackagelist - dumps out a list of packages for a given channel to a text file. Supports recursion.
