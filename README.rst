@@ -52,7 +52,7 @@ Software Channel Management
 |                             | Supports recursion.                                                           |
 +-----------------------------+-------------------------------------------------------------------------------+
 | spw-channel-list            | lists software channels.                                                      |
-|                               | Supports regex and can display the number of subscribed systems.              |
+|                             | Supports regex and can display the number of subscribed systems.              |
 +-----------------------------+-------------------------------------------------------------------------------+
 | spw-channel-org-access      | controls / reports on channel sharing across orgs                             |
 +-----------------------------+-------------------------------------------------------------------------------+
