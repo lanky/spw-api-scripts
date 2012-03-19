@@ -1,0 +1,319 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi and python-progressbar modules
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+__doc__ = """
+Compares a textdump of 'rpm -qa' from a system to a channel in RHN
+
+The rpm -qa output should look like this:
+NAME|VERSION|RELEASE|ARCH|EPOCH
+
+so set your --queryformat appropriately
+e.g. rpm -qa --queryformat '%{NAME}|%{VERSION}|%{RELEASE}|%{ARCH}|%{EPOCH}\n'
+
+The separator for these fields can be specified on the commandline, if you absolutely must.
+"""
+__author__ = "Stuart Sears <stuart@sjsears.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import sys
+# testing rhnapi updates
+sys.path.insert(0, '/home/ssears/scripts/newscripts/python-rhnapi')
+import os
+from optparse import OptionParser, OptionGroup
+from pprint import pprint
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import packages
+from rhnapi import channel
+from rhnapi import utils
+
+# from progressbar, for user feedback
+from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
+
+# --------------------------- Script Configuration --------------------------- #
+# config file location and server hostname
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+# --------------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    preamble = """Reads a textfile containing a dump of rpm -qa from a system with a channel in RHN Satellite.
+ The rpm queryformat should contain NAME|VERSION|RELEASE|ARCH|EPOCH information.
+ Separator can be any reasonable char but defaults to the pipe character. """
+    usagestr = "%prog [RHNOPTS] [-f OUTPUTFILE ] [ -s SEPARATOR ] -c CHANNEL_LABEL INPUTFILE"
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all nonessential console output")
+    parser.add_option("-P", "--progress", action = "store_true", default = False,
+        help = "Show a progressbar for long-running operations")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options
+    changrp = OptionGroup(parser, "Channel Options")
+    changrp.add_option("-c", "--channel", help = "Channel LABEL to diff against.")
+    changrp.add_option("-f", "--file", help = "output file for diffs")
+    changrp.add_option("-s", "--separator", default = "|",
+        help = "separator used in rpm -qa queryformat. default is '%default'")
+    parser.add_option_group(changrp)
+
+    # parse the arguments we were given (commandline, probably)
+    opts, args = parser.parse_args(argv)
+
+    # check the args for errors etc...
+    if len(args) != 1:
+        print "ERROR: Too many arguments"
+        parser.print_help()
+        sys.exit(0)
+    else:
+        if not os.path.isfile(args[0]):
+            print "ERROR: input file %s does not exist" % args[0]
+            parser.print_help()
+            sys.exit(1)
+    # only expecting one arg, so let's just return that instead of a list            
+    return opts, args[0]
+
+# ---------------------------------------------------------------------------- #
+
+def index_pkglist(pkglist, logger, progressbar = False):
+    """
+    Indexes a list of packages by nvrea which should be unique, even on a satellite.
+    """
+    logger.info("indexing packages by NVREA")
+    nvrea_list = []
+    if progressbar:
+        widgets = [ 'Packages: [', Counter(), ']', Bar(), Timer() ]
+        pbar = ProgressBar(widgets = widgets, maxval = len(pkglist)).start()
+    for p in pkglist:
+        # handle the peculiarities of the RHN DB schema and key names
+        if p.has_key('arch') and not p.has_key('arch_label'):
+            p['arch_label'] = p['arch']
+
+        if p['arch_label'] == 'AMD64':
+            p['arch_label'] = 'x86_64'
+
+        # if a package has an 'epoch' tag, it goes at the start of an entry.
+        # if not, well, it doesn't
+        if p.get('epoch').strip() != '':
+            nvrea  = "%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s" % p
+        else:   
+            nvrea = "%(name)s-%(version)s-%(release)s.%(arch_label)s"% p
+
+        logger.debug(nvrea)
+
+# arguably the strip() should be unneccesary
+        nvrea_list.append(nvrea.strip())
+        
+        if progressbar:
+            pbar.update(pkglist.index(p) + 1)
+
+    if progressbar:            
+        # we need to print a newline or the next output overwrites the progressbar.
+        # good, huh?
+        print            
+
+    return set(nvrea_list)
+
+# ---------------------------------------------------------------------------- #
+
+def process_rpmlist(rpmlist, separator, logger, showprogress = False):
+    """
+    Processes a list of rpms from rpm -qa --qf '%{NAME}|%{VERSION}|%{RELEASE}|%{ARCH}|%{EPOCH}\n'
+    separator is used to split these.
+
+    returns a set of NVREA names
+    """
+    logger.info("Processing input file %s" % rpmlist)
+
+    filedata = open(rpmlist).readlines()
+    if showprogress:
+        counter = 0
+        widgets = ['Packages: ', Counter(), '[', Percentage(), ']', Bar(),
+                   '(', Timer(), ')']
+        pbar = ProgressBar(widgets = widgets, term_width = 80, maxval = len(filedata)).start()
+
+    # iterate over the lines in the input file
+    syspkgs = set([])
+    for line in filedata:
+        try:
+            # lines should be name|ver|rel|arch|epoch, where epoch is mostly '(none)'
+            pkgname, pkgver, pkgrel, pkgarch, pkgepoch = line.strip().split(separator)
+            # we don't care about imported public keys - they aren't "proper" packages
+            if pkgname == 'gpg-pubkey':
+                continue
+
+            if pkgepoch.strip() == '(none)':
+                pkgepoch = ''
+            else:
+                pkgepoch = '%s:' % pkgepoch
+            nvrea = "%s%s-%s-%s.%s" %(pkgepoch, pkgname, pkgver, pkgrel, pkgarch)
+            logger.debug("Parsed %s => %s" %(line ,nvrea))
+            syspkgs.add(nvrea)
+        except:
+            # ignore lines not matching the pattern
+            if showprogress:
+                counter +=1
+                pbar.update(counter)
+            continue
+        # now we lookup the package id from satellite
+        # There should only be one matching entry for each NVREA entry
+
+        if showprogress:
+            counter += 1
+            pbar.update(counter)
+
+    print
+    print "got %d packages" % len(syspkgs)
+    return syspkgs
+
+# ---------------------------------------------------------------------------- #
+
+def qprint(msg, quiet = False):
+    """
+    A conditional print statement - print (to stderr) if quiet is not True
+    """
+    if quiet:
+        pass
+    else:
+        sys.stderr.write("%s\n" % msg.strip())
+
+
+# --------------------------------------------------------------------------------- #
+
+def main():
+    # there should only be one entry in args, so...
+    opts, inputfile = parse_cmdline(sys.argv[1:])
+    # outputfile = inputfile.replace('.txt','.json')
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    if opts.quiet:
+        opts.progress = False
+
+    try:
+        # initialise an RHN Session
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+# prepare our output summary dict
+        res = { }
+        qprint("* Parsing RPM query results file %s" % inputfile, opts.quiet)
+        systempkgs = process_rpmlist(inputfile, opts.separator, RHN.logger, opts.progress)
+        RHN.logInfo("Got %d packages (excluding GPG keys) from file %s" %(len(systempkgs), inputfile))
+
+        qprint("* Listing and indexing packages from channel %s" % opts.channel, opts.quiet)
+        
+        RHN.logInfo("Getting a list of packages from channel %s ")
+        res[opts.channel] = index_pkglist(channel.listAllPackages(RHN, opts.channel), RHN.logger, opts.progress)
+        
+        qprint("* Processing child channels (if any)", opts.quiet)
+        RHN.logInfo("Processing Child Channels of %s" % opts.channel)
+
+        for chan in channel.listChildChannels(RHN, opts.channel):
+            qprint("* Listing and indexing packages in channel %s" % chan, opts.quiet)
+            RHN.logInfo("processing %s" % chan)
+            res[chan] = index_pkglist(channel.listAllPackages(RHN, chan), RHN.logger, opts.progress)
+
+        qprint("* Reducing lists", opts.quiet)
+
+# now we need to summarise, which means comparing the system list against the various channels
+# the desired result here is a dict containing the packages from each channel installed on the given host
+# plus the remainder in the 'systempkgs' set
+        for k, v in  res.iteritems():
+# list all packages that are in both the system RPM list and the channel package list
+            qprint("* Intersecting channel %s and RPM list" % k, opts.quiet)
+            intersect = systempkgs.intersection(v)
+# now remove all of those from the system RPM list            
+            systempkgs.difference_update(intersect)
+            qprint("length of syspkgs after intersect: %d" % len(systempkgs), opts.quiet)
+            RHN.logInfo("System has %d packages from channel %s" % (len(intersect), k))
+            res[k] = intersect
+
+        if len(systempkgs) != 0:
+            RHN.logInfo("System has %d packages installed that are not in any subscribed channel" % len(systempkgs)) 
+            res['local'] = systempkgs
+
+        total = 0
+        width = max([len(x) for x in res.keys() ])
+        fmtstr = "%%-%ds [ %%d ]" % width
+        print "%s [ Package Count ]" % "Channel".ljust(width)
+        print "=".ljust(width + 18, '=')
+        for k, v in res.iteritems():
+            total += len(v)
+            print fmtstr % (k, len(v))
+        print "total number of packages scanned: %d" % total
+
+        if opts.file:
+            print "dumping to %s " % opts.file
+            utils.dumpJSON(res, opts.file, verbose = True)
+
+    except KeyboardInterrupt:
+        print "operation cancelled"
+        sys.exit(1)
+
+# --------------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    main()
+
+    
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python nu:
