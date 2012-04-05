@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# requires the python-rhnapi and python-progressbar modules
 # requires the python-rhnapi module
 #
 # Copyright 2009-2012 Stuart Sears
