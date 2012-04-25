@@ -293,6 +293,7 @@ def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
 
     if chanobj['description'] != '':
         logger.debug("Adding description %(description)s" % chanobj)
+        cloneobj['description'] = chanobj['description']
     if chanobj['gpg_key_url'] != '':
         logger.debug("Adding GPG Key URL '%(gpg_key_url)s'" % chanobj)
         cloneobj['gpg_url'] = chanobj['gpg_key_url']
@@ -418,7 +419,7 @@ def main():
         if opts.recursive:
             # in recursive mode, the base channel (was opts.source) is the first entry
             # in our processed list of channel dicts
-            # actually we shouldn't have more than on unless we're in recursive mode.
+            # actually we shouldn't have more than one unless we're in recursive mode.
             basechan = chanmaps.pop(0)
             cloneparent = basechan.get('clone_label')
             RHN.logDebug("Recursive mode. Cloning all child channels of %(label)s" % basechan)
