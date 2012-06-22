@@ -96,13 +96,14 @@ This script can cause damage to your satellite and should be used with care.
     # script-specific options
     ccgrp = OptionGroup(parser, "Configuration Channel Options")
     ccgrp.add_option("--list", action="store_true", default=False,
-        help="List existing config channel labels and exit. In combination with --regex, also shows clone labels that would be created.")
+        help="List existing config channel labels and exit. Can be used to preview changes before applying them.")
     ccgrp.add_option("-u","--update", action="store_true", default = False,
         help="Update the content of existing destination channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-r","--replace", action="store_true", default = False,
         help="Replace (delete and recreate) existing destination channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-x", "--regex", default = False, action = "store_true",
-        help = "SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. Single quote them! Use with extreme caution. use --list first")
+        help = """SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. 
+Single quote them! Use with extreme caution. use --list first. Named groups can be used but should be double-escaped (e.g. \\\\1)""")
     ccgrp.add_option("-g", "--glob", help = "Shell-style glob pattern for selecting source channels")
     ccgrp.add_option("-p", "--prefix", help = "Prefix to prepend to source channel label to form clone label")
     ccgrp.add_option("-s", "--suffix", help = "Suffix to append to source channel label to form clone label")
@@ -279,6 +280,9 @@ def main():
             source_labels = [ x for x in existing_labels if fnmatch(x, opts.glob)]
             # let's start with the same as the source list
             dest_labels = list(source_labels)
+        else:
+            source_labels = existing_labels
+            dest_labels   = existing_labels
         
         if opts.prefix:
             dest_labels = [ '%s-%s' %(opts.prefix, x) for x in dest_labels ]
