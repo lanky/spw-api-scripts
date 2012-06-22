@@ -271,7 +271,6 @@ def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
     logger(logging.Logger)  - a logger for reporting (probably rhnSession.logger)
     parent(str)             - label for parent of new cloned channel. Optional.
     """
-    logger.debug("Generating channel info for clone %s" % newlabel)
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     # template
     clonelabel = chanobj.get('clone_label', None)
@@ -281,6 +280,8 @@ def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
             clonelabel = newlabel
         else:
             clonelabel = "clone-%s" % chanobj.get('label')
+
+    logger.debug("Generating channel info for clone %s" % clonelabel)
 
     cloneobj = {
         'summary' : "Clone of %s, created on %s" %(chanobj['label'], timestamp),
@@ -441,6 +442,8 @@ def main():
 # -------------------------- child channel cloning --------------------------- #
         for chanobj in chanmaps:
             cloneinfo = generate_clone_info(chanobj, RHN.logger, parent = cloneparent)
+            if opts.name:
+                cloneinfo['name'] = opts.name
             if channel.cloneChannel(RHN, chanobj['label'], opts.noerrata, **cloneinfo):
                 RHN.logInfo("successfully cloned %(label)s as %(clone_label)s" % chanobj)
             else:
