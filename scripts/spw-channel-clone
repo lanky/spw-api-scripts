@@ -209,7 +209,7 @@ def label_to_name(label, capwords = CAPWORDS, archwords = ARCHWORDS):
     # at the moment these are the only arches we have...
     # arches = [ 'i386', 'x86_64' ]
     output = []
-    for word  in re.split('[-_]', label):
+    for word  in re.split('[-\s]', label):
         if word in capwords:
             output.append(word.upper())
         elif word in archwords:
