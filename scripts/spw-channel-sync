@@ -1,0 +1,184 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright (c) Stuart Sears <stuart.sears@man.com>
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+__doc__ = """
+synchronise one managed channel with another.
+Or more accurately, push packages from channel A into channel B if they're not already there.
+
+Simples.
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import re
+from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import utils
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# pattern representing RH channel labels
+rhpatt = re.compile(r'^(rhel|rhn)-')
+pindex = os.path.expanduser('~/.rhn/packageindex')
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    usage = "%prog [RHNOPTIONS] -c SOURCE DESTINATION..."
+    preamble = """Synchronise packages from SOURCE channel to DESTINATION channel.
+Essentially pushes all packages that are in SOURCE but not in DESTINATION.
+Can specify a list of package names or shell-style globs to narrow down the package selection.
+
+Can be used to promote packages through dev/UAT/Staging/Production (etc) workflow.
+"""    
+    parser = OptionParser(usage = usage, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "Save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "Log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    changrp = OptionGroup(parser, "Channel and input data options")
+    changrp.add_option("-s", "--source-channel", dest="source", metavar="SOURCE", help = "Source channel LABEL.")
+    changrp.add_option("-p", "--packages", help = """A Package name (e.g. 'bash') to synchronise, rather than everything in SOURCE.
+Will sync all versions of package, so clean up old ones if you don't want that.
+Can also be a comma-separated list, without spaces.
+This also supports shell globs, so (for example) 'bash*' will work. Please ensure you quote anything with wildcards in it.""")
+    changrp.add_option("-n", "--not-really", action = "store_true", default = False,
+        help = "Perform a dry-run and report packages that would have been synced")
+    changrp.add_option("-c", "--confirm", action = "store_true", default = False,
+        help = "Report packages that would be synchronised by the current command and prompt for confirmation")
+
+    parser.add_option_group(changrp)
+
+    opts,args = parser.parse_args(argv)
+
+    # argument and option sanity checks
+    if len(args) < 1:
+        print "ERROR: At least 1 destination channel label is required."
+        parser.print_help()
+        sys.exit(1)
+
+    return opts, args
+
+
+# ---------------------------------------------------------------------------- #
+
+def main(argv):
+    opts, chanlist = parse_cmdline(argv)
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+        # get a list of packages we could sync:
+        if opts.packages:
+            namelist = opts.packages.split(',')
+            chanpackages = channel.listAllPackages(RHN, opts.source)
+            packagelist = []
+            for n in namelist:
+                packagelist.extend([ x for x in chanpackages if fnmatch(x['name'], n)])
+        else:            
+            packagelist = channel.listAllPackages(RHN, opts.source)
+        for chan in chanlist:
+            # just as a default for this channel
+            sync = True
+            RHN.logInfo("Processing destination channel %s" % chan)
+            currentids = set([ x['id'] for x in channel.listAllPackages(RHN, chan) ])
+            newids = set([x['id'] for x in packagelist])
+            syncme = newids.difference(currentids)
+            if len(syncme) > 0:
+                if opts.not_really:
+                    print "would synchronise %d packages to %s" %(len(syncme), chan)
+                    print '\n'.join( [ "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in packagelist if p['id'] in syncme ])
+                    sync = False
+                elif opts.confirm:
+                    print "Synchronise %d packages to %s" %(len(syncme), chan)
+                    print '\n'.join( [ "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in packagelist if p['id'] in syncme ])
+                    sync = utils.promptConfirm("Continue?", default='Y')
+
+                if sync:
+                    RHN.logInfo("Syncing %d packages to %s" %(len(syncme), chan))
+                    if channel.addPackages(RHN, chan, list(syncme)):
+                        RHN.logInfo("Success.")
+                    else:
+                        RHN.logError("ERROR: some packages did not synchronise to channel")
+                else:
+                    RHN.logInfo("Exiting without sync")
+                    sys.exit(0)
+            else:
+                RHN.logInfo("All selected packages are already in destination channel %s. Nothing to do" % chan) 
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+
+# ---------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
