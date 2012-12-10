@@ -86,6 +86,7 @@ def parse_cmdline(argv):
     changrp.add_option("-s", "--summary", help = "Channel summary (defaults to the label) ", default=None)
     changrp.add_option("-a", "--arch", help = "Channel Architecture [%default] ", default="x86_64")
     changrp.add_option("-p", "--parent", help="Parent for new channel. Default is a base channel", default="")
+    changrp.add_option("--test", action="store_true", default=False, help="Test channel creation would work and exit")
     parser.add_option_group(changrp)
 
 
@@ -153,6 +154,9 @@ def main():
 
         # okay, we have the information needed, let's try and create the channel
 
+        if opts.test:
+            print "Exiting without creating channel"
+            sys.exit(0)
         if channel.create(RHN, opts.channel, opts.name.strip(), opts.summary.strip(), opts.arch.strip(), parent=opts.parent.strip()):
             RHN.logInfo("channel %s successfully created" % opts.channel)
         else:
