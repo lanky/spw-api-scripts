@@ -29,7 +29,19 @@ with entries like this:
 
 { 'openssl-0.9.8b-10.el5.x86_64' : 3309 }
 
-This can be generated using an RHN DB script (packageindex.py)
+This can be generated using spw-package-index. It takes a while.
+Package names to push are taken from input files, containing NVRA strings for each package.
+Can be pointed at an individual text file, with entries like this:
+NAME-VERSION-RELEASE.ARCH
+e.g.
+yum-kmod-1.1.10-9.el5.noarch
+
+If pointed at a directory, that directory is assumed to have one file per channel you wish to update, where the filenames 
+match channel labels in your satellite. Any files that do not match a channel label are simply ignored, so this should be
+safe.
+
+Essentially the script parses the NVRA strings, looks them up in the package index and then adds those packages to each
+destination channel, using the package ID numbers, assuming they aren't already present.
 """
 __author__ = "Stuart Sears <stuart.sears@man.com>"
 
@@ -46,6 +58,7 @@ except ImportError:
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import channel
+from rhnapi import utils
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -64,14 +77,17 @@ RHNPASS = None
 
 # pattern representing RH channel labels
 rhpatt = re.compile(r'^(rhel|rhn)-')
+pindex = os.path.expanduser('~/.rhn/packageindex')
 
 # ---------------------------------------------------------------------------- #
 
 def parse_cmdline(argv):
-    usage = "%prog [RHNOPTIONS] [-d] [-c CHANNEL] DATASOURCE"
-    preamble = """Sync missing packages in DATASOURCE to target channel(s). 
-If DATASOURCE is a directory, files within that directory are assumed to match channel labels in your satellite.
-If DATASOURCE is a file and --channel is not provided, the destination channel is assumed to be DATASOURCE"""
+    usage = "%prog [RHNOPTS] [-c CHANNEL] DATASOURCE"
+    preamble = """Update/Synchronise selected channels with package names (in NVRA format) read from DATASOURCE.
+If DATASOURCE is a directory, filenames within that directory are assumed to match channel labels in your target satellite.
+Any that do not will be (silently, except in debug mode) ignored.
+If DATASOURCE is a file and --channel is not provided, the destination channel is assumed to be DATASOURCE (the filename)
+The script makes use of a packageindex file in JSON format, to speed lookups. This can be generated for your satellite using spw-package-index"""
     parser = OptionParser(usage = usage, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
         help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
@@ -133,6 +149,13 @@ If DATASOURCE is a file and --channel is not provided, the destination channel i
         parser.print_help()
         sys.exit(3)
 
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
     return opts, filelist
 
 
@@ -141,25 +164,14 @@ If DATASOURCE is a file and --channel is not provided, the destination channel i
 def main(argv):
     opts, filelist = parse_cmdline(argv)
 
-    try:
-        pindex = json.loads(open(opts.packageindex).read())
-    except:
-        print "Unable to open %s. Please check and try again" % opts.packageindex
-        raise
-        sys.exit(4)
+    pindex = utils.loadJSON(opts.packageindex)
 
-    if opts.debug:
-        rhnloglevel = 10
-    elif opts.verbose:
-        rhnloglevel = 20
-    else:
-        rhnloglevel = 30
 
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                logname = os.path.basename(sys.argv[0]), loglevel=opts.loglevel,
                                 )
         # did we give the --debug switch?
         if opts.verbose:
