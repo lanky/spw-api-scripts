@@ -31,6 +31,7 @@ Back them up first (see spw_export_configchannel) for safety and sanity
 import sys
 import os
 from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
 
 # custom module imports
 # base RHN modules and classes:
@@ -55,7 +56,12 @@ def parse_cmdline(argv):
     give this sys.argv[1:] as an argument to avoid any issues with the script name
     being considered an 'argument' and processed
     """
-    preamble = "Delete the specified configuration channel(s) from your satellite. Use with care. You might want to back them up first. See 'export-configchannels.py' for one way to do this."
+    preamble = """
+    Delete the specified configuration channel(s) from your satellite. Use with care.
+You might want to back them up first. See 'spw-configchannel-export' for one way to do this.
+Channel labels can also be shell globs/wildcards. The --test option allows you to see which 
+channels would be deleted.
+    """
     usagestr = "%prog [OPTIONS] CHANNEL_LABEL..."
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
@@ -81,12 +87,14 @@ def parse_cmdline(argv):
     confgrp = OptionGroup(parser, "Configuration Channel Options")
     confgrp.add_option("-l", "--list", action = "store_true", default = False,
         help = "Just list existing configuration channel labels and exit")
+    confgrp.add_option("-n", "--test", action = "store_true", default = False,
+        help = "List the configuration channels which would be deleted.")
     parser.add_option_group(confgrp)
 
     # script-specific options
     opts, args = parser.parse_args(argv)
 
-    # do sanity-chacking stuff here
+    # do sanity-checking stuff here
     if len(args) < 1 and not opts.list:
         print "You must provide at least one configuration channel label"
         parser.print_help()
@@ -120,21 +128,32 @@ def main():
         if opts.debug:
             RHN.enableDebug()
         existing_labels = [ x['label'] for x in configchannel.listGlobals(RHN) ]
+        # support shell globbing of arguments
+        chanlist = []
+        RHN.logInfo("reducing channel selection to existing and matching channels")
+        for chan in args:
+            chanlist.extend([ l for l in existing_labels if fnmatch(l, chan) ])
+
         if opts.list:
             print "Existing Configuration Channels"
             print "==============================="
             print '\n'.join(existing_labels)
             sys.exit(0)
+        
+        elif opts.test:
+            print "Configuration Channels to be deleted"
+            print "===================================="
+            print "\n".join(chanlist)
+            sys.exit(0)
 
-            
-        for chan in args:
-            if not chan in existing_labels:
-                RHN.logErr("Configuration Channel %s does not exist. Skipping it." % chan)
-                continue
-            if configchannel.deleteConfigChannel(RHN, args[0]):
-                RHN.logInfo("Configuration channel '%s' successfully deleted" % chan)
-            else:
-                RHN.logErr("failed to delete channel %s" % chan)
+
+        else:  
+            for chan in chanlist:
+                RHN.logDebug("Deleting config channel %s" % chan)
+                if configchannel.deleteConfigChannel(RHN, chan):
+                    RHN.logInfo("Configuration channel '%s' successfully deleted" % chan)
+                else:
+                    RHN.logErr("failed to delete channel %s" % chan)
 
     except KeyboardInterrupt:
         print "Operation Cancelled\n"
