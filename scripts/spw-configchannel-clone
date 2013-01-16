@@ -302,14 +302,6 @@ def main():
                 for pair in zip(source_labels, dest_labels):
                     print fmtstr % pair
             sys.exit(0)
-# now we have no --list or --regex
-        else:
-            # convert args to a list
-            # technically this means we would support comma-separated lists of channel labels
-            # but we won't advertise that fact until we're sure it works
-            source_labels = args[0].split(',')
-            dest_labels = args[1].split(',')
-
 
 # ---------------------- Configuration Channel Cloning ----------------------- #
 # pair up the source and destination labels and process them
