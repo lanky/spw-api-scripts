@@ -140,7 +140,8 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     2. Pre and Post Scripts (recreated with content)
     3. File Preservation lists (by name)
     """
-    #    ksobject['ks_tree']               = kickstart.getKickstartTree(rhn, kslabel)
+
+
     # assuming the object already exists, fetch the label for ease of typing:
     kslabel = ksobject.get('label')
     rhn.logInfo("Processing kickstart label %s" % kslabel)
@@ -277,6 +278,20 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
         else:
             rhn.logDebug("key %(description)s does not exist and I couldn't create it. skipping..." % akey)
             continue
+            
+    # create missing kickstart trees (we do this now as the activationkey phase should have failed already if
+    # the appropriate channel labels do not exist on the satellite
+    kstree = ksobject.get('ks_tree', {})
+    if kickstart.getTreeDetails(rhn, kstree.get('label')):
+        rhn.logInfo("kickstart Tree %s already exists, no need to create it" % kstree)
+        tree_exists = True
+    else:
+        # we need to create the kickstart tree from the provided details.
+        tree_exists = kickstart.createTree(rhn, kstree.get('label'), kstree.get('abs_path'), kstree.get('base_channel'), kstree['install_type']['label'])
+    if tree_exists:
+        if kickstart.setKickstartTree(rhn, kslabel, kstree.get('label')):
+            rhn.logInfo("set kickstart distribution to %(label)s" % kstree)
+    else:
 
 # ---------------------------------------------------------------------------- #
 
@@ -286,7 +301,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     This is complex... we have to
     1. create the key
     2. add base and child software channels
-       - if they don't already exist with teh correct labels,
+       - if they don't already exist with the correct labels,
          this will fail :)
     4. set config management options and channels
        - missing config channels are skipped

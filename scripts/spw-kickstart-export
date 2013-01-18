@@ -142,8 +142,9 @@ def get_ks_details(rhn, ksobject, verbose = False):
     rhn.logDebug("* custom kickstart options")
     ksobject['custom_opts']           = kickstart.getCustomOptions(rhn, kslabel)
     # technically included in the base kickstart info:
-    rhn.logDebug("* kickstart tree label")
-    ksobject['ks_tree']               = kickstart.getKickstartTree(rhn, kslabel)
+    rhn.logDebug("* kickstart tree (distribution) information")
+    kstree                            = kickstart.getKickstartTree(rhn, kslabel)
+    ksobject['ks_tree']               = kickstart.getTreeDetails(rhn, kstree)
     # list all the pre and post scripts
     rhn.logDebug("* pre and post scripts")
     ksobject['script_list']           = kickstart.listScripts(rhn, kslabel)
@@ -293,7 +294,11 @@ def main():
             outputfile = opts.file
 # if not, try naming it after the kickstart profiles we chose            
         elif opts.kickstart:
-            outputfile = '%s.json' % '_'.join(export_labels)
+            if len(export_labels) == 1:
+                outputfile = '%s.json' % '_'.join(export_labels)
+            else:
+# for multiple labels, we just use a generic filename, based on a timestamp
+                outputfile = "kickstart-export-%s.json" % time.strftime("%Y-%m-%d_%H%M%S")
 # failing that, just use a timestamp            
         else:
             outputfile = "kickstart-export-%s.json" % time.strftime("%Y-%m-%d_%H%M%S")
