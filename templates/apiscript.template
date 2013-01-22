@@ -23,9 +23,10 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
-"""
+__doc__ = """
+%s
 API script template file.
-"""
+""" % os.path.basename(__file__)
 __author__ = "Your Name <email>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
@@ -55,7 +56,8 @@ RHNPASS = None
 
 def parse_cmdline(argv):
     """
-    process the commandline :)
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
     """
     def error(errlines, exitcode = 1):
         """
