@@ -1,4 +1,6 @@
 include README.scripts
 include README.rst
+include ChangeLog
+include GPL.txt
 graft templates/
 recursive-include scripts *.py
