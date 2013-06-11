@@ -1,0 +1,427 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+#
+# Copyright 2013 Stuart Sears / Man Group
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
+from operator import itemgetter
+from rpmUtils.miscutils import splitFilename
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import system
+from rhnapi import channel
+from rhnapi import utils
+
+from progressbar import Counter,Percentage,ProgressBar,Timer
+
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+__doc__ = """
+%s
+Lists Systems with a given package name installed. Can specify version, release and arch too if required.
+""" % os.path.basename(__file__)
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+    def opterror(optparser, errmsg, exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        if isinstance(errmsg, list):
+            print "\n".join(errmsg)
+        else:
+            print errmsg
+        optparser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """lists systems with the given packages installed, by name. Can optionally
+specify version, release and arch too. While it is technically possible to specify version
+and release for multiple packages, this may result in odd behaviours and exclude packages
+that would otherwise match.
+Package name, version and release all support shell globbing (wildcards).
+Use them with care and quote or escape them to avoid shell interference"""
+
+    usagestr = "%prog [OPTIONS] PACKAGENAME..."
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    # this is not implemented in most scripts, but if you want it, remember to handle it below in main()
+    # parser.add_option("-q", "--quiet", action = "store_true", default = False,
+    #   help = "Disable all logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    pkggrp = OptionGroup(parser, "Package Selection Options", "Most of these support standard shell globbing/wildcards")
+    pkggrp.add_option("-V", "--version", help="Only list packages of this version.")
+    pkggrp.add_option("-R", "--release", help="Only list packages of this release.")
+    pkggrp.add_option("-A", "--arch", help="Only list packages of the given architecture")
+    pkggrp.add_option("-i", "--case-insensitive", dest="lcase", action="store_true", default=False,
+        help="Matches are case-insensitive (essentially lowercases all provided patterns and matching names)")
+    pkggrp.add_option("-f", "--filename", help = "figure out package names etc from a filename (the RPM package name)")
+    parser.add_option_group(pkggrp)
+
+    sysgrp = OptionGroup(parser, "System Selection Options")
+    sysgrp.add_option("-s", "--systems", action="append",
+        help="Only process systems matching the given pattern. Supports wildcards. Can be specified multiple times")
+    sysgrp.add_option("-c", "--channel", help="Only process systems who are subscribed to the specified base software channel")
+    sysgrp.add_option("-x", "--invert", action="store_true", default=False,
+        help="Display only systems that do NOT have the chosen packages installed")
+    parser.add_option_group(sysgrp)
+
+
+    # these will take time to implement
+    outgrp = OptionGroup(parser, "Output Formatting Options")
+    outgrp.add_option("--grid", action="store_true", default=False,
+        help="Display output in a grid form. Default is just a list of systems")
+    outgrp.add_option("--short", action="store_true", default=False,
+        help="Use short hostnames in output")
+    outgrp.add_option("--json", help="dump results directly to the given file in JSON format")
+    outgrp.add_option("--csv", help="dump results directly to the given file in CSV format")
+    parser.add_option_group(outgrp)
+
+
+    # by default
+
+    opts, args = parser.parse_args(argv)
+    # -f overrides command line args
+    if opts.filename:
+        pkgname, opts.version, opts.release, epoch, opts.arch = splitFilename(opts.filename)
+        args = [ pkgname ]
+    elif len(args) == 0:
+        # we don't have a filename or any args to match
+        opterror(parser, "ERROR: no package names provided")
+    # oddly we don't need an else...
+
+    # system patterns is an empty list if not used.
+    if not opts.systems:
+        opts.systems = []
+
+    # finally...
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+def merge_results(sysname, pkglist, resdict, logger):
+    """
+    Updates the results dictionary in-place from system matches
+    new results format:
+    { packagename: 
+        [ { 'sysname'     : system FQDN
+            'hostname'    : system short hostname
+            'name'        : package name
+            'version'     : package version
+            'release'     : package release
+            'epoch'       : package epoch
+            'arch'        : package architecture
+            'installdate' : iso8601 format date
+        }]
+    }
+    """
+    shortname = sysname.split('.')[0]
+    logger.info("processing %d matching packages for system %s" % (len(pkglist), sysname))
+    logger.info("processing %d matching packages for system %s" % (len(pkglist), sysname))
+    # process our package list one by one until none are left :)
+    while len(pkglist):
+        p = pkglist.pop()
+        pname = p.get('name')
+        p['sysname'] = sysname
+        p['shortname'] = shortname
+        # do we already have an entry for the current package name?
+        if not resdict.has_key(pname):
+            logger.debug("Adding new entry for package %(name)s" % p)
+            resdict[pname] = [ p ]
+        else:
+            # package entry exists
+            logger.debug("Adding entry for system %s to package %s" %(sysname, pname))
+            if p not in resdict[pname]:
+                resdict[pname].append(p)
+# ---------------------------------------------------------------------------- #
+
+def key_match(key, val, obj, nocase = False):
+    """
+    compares results against given key=val
+    """
+    if nocase:
+        return fnmatch(obj.get(key).lower(), val.lower())
+    else:
+        return fnmatch(obj.get(key), val)
+
+# ---------------------------------------------------------------------------- #
+
+def arch_match(arch, obj):
+    """
+    matches architectures. This is not globbed.
+    """
+    if arch == 'x86_64':
+        arch = 'AMD64'
+    return obj.get('arch') == arch
+
+# ---------------------------------------------------------------------------- #
+
+def gen_report(resdict, shortnames=False):
+    """
+    generates a report, oddly enough.
+    """
+    # here pkg is a string
+    # syspkgs is a dictionary, { hostname : [pkglist]}
+    header = { 'shortname' : 'hostname',
+               'sysname' : 'hostname',
+               'name' : 'name',
+               'version' : 'version',
+               'release' : 'release',
+               'installtime' : 'install time'
+    }
+    for pkg, entries in resdict.iteritems():
+        print "Matching systems with %s installed" % pkg
+        lendict = utils.getMaxLen(entries + [ header ])
+        if shortnames:
+            fmtstr = "| %%(shortname)-%(shortname)ds | %%(name)-%(name)ds | %%(version)-%(version)ds | %%(release)-%(release)ds |" % lendict
+        else:
+            fmtstr = "| %%(sysname)-%(sysname)ds | %%(name)-%(name)ds | %%(version)-%(version)ds | %%(release)-%(release)ds |" % lendict
+        linelen = len(fmtstr % header)
+        separator = "-".ljust(linelen, '-')
+        print separator
+        print fmtstr % header
+        print separator
+        for e in sorted(entries, key=itemgetter('sysname')):
+            print fmtstr % e
+            print separator
+            
+# ---------------------------------------------------------------------------- #
+
+def dump_csv(objlist, outfile, logger, shortnames=False):
+    """
+    dumps CSV records...
+    we pass this a dict, keyed on packages
+    """
+
+    # well, we don't need it unless we are trying to output CSV
+    if shortnames:
+        keys = [ 'shortname' ]
+    import csv
+    try:
+        fd = open(outfile, 'wb')
+        mywriter = csv.DictWriter(fd, fieldnames=keys, restval="None")
+        mywriter.writerows(objlist)
+    except Exception, E:
+        logger.error("Error writing CSV output to %s" % outfile, exc_info=True)
+        return False
+
+def index_on_system(resdict):
+    """
+    returns a simple dict keyed on system names
+    e.g. from this:
+    {
+      "pulp-admin-client": [
+        {
+          "sysname": "tloninengdcms01.maninvestments.com",
+          "installtime": "20130402T11:02:28",
+          "epoch": " ",
+          "version": "2.0.8",
+          "release": "1",
+          "shortname": "tloninengdcms01",
+          "arch": "noarch",
+          "name": "pulp-admin-client"
+        }
+      ],...
+    to this:
+    { "tloninengdcms01.maninvestments.com" : [
+        { pkg1 }
+        { pkg2 }
+    ],...
+    """
+    sysdict = {}
+# p is a packagename
+    for pkg, matches in resdict.iteritems():
+        for m in matches:
+            k = m.get('sysname')
+            if not sysdict.has_key(k):
+                sysdict[k] = [ m ]
+            else:
+                sysdict[k].append(m)
+
+    return sysdict
+
+
+# ---------------------------------------------------------------------------- #
+
+def main(argv):    
+    opts, globs = parse_cmdline(argv[1:])
+# booleans to test if we need to compare version/release or arch
+    cmpver  = opts.version is not None
+    cmprel  = opts.release is not None
+    cmparch = opts.arch is not None
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                )
+
+        if opts.channel:
+            allchans = [ c.get('label') for c in channel.listAllChannels(RHN) ]
+            if opts.channel in allchans:
+                systemlist = channel.listSubscribedSystems(RHN, opts.channel)
+            else:
+                RHN.logError("Channel %s doesn't appear to exist" % opts.channel)
+        else:
+            systemlist = system.listSystems(RHN)
+
+
+
+        results = {}
+        if len(opts.systems) > 0:
+            boxlist = []
+            RHN.logInfo("Reducing system list based on patterns %r" % opts.systems)
+            widgets = ['Reducing system list: ', Counter(), ' systems [', Percentage(), ']', '(', Timer(), ')']
+            pbar = ProgressBar(widgets=widgets, maxval=len(systemlist), term_width=80).start()
+            counter = 0
+            while len(systemlist):
+                counter += 1
+                b = systemlist.pop()
+                boxname = b.get('name')
+                for patt in opts.systems:
+                    if fnmatch(boxname,patt):
+                        RHN.logDebug("System %s matched by '%s'" % (boxname, patt))
+                        if b not in boxlist:
+                            boxlist.append(b)
+                    else:
+                        RHN.logDebug("%s does not match '%s'" % (boxname, patt))
+                pbar.update(counter)                        
+        else:
+            boxlist = sorted(systemlist, key=itemgetter('name'))
+
+        RHN.logInfo("Processing packages for %d systems" % len(boxlist))                            
+
+        print 
+        widgets = ['Matching packages: ', Counter(), ' / %d' % len(boxlist),' systems [', Percentage(), ']', '(', Timer(), ')']
+        pbar = ProgressBar(widgets=widgets, maxval=len(boxlist), term_width=80).start()
+
+        for box in boxlist:
+            boxpkgs = system.listPackages(RHN, box['id'])
+            boxname = box.get('name')
+            syspkgs = []
+            for p in boxpkgs:
+                pname = p.get('name')
+                for g in globs:
+                    if opts.lcase:
+                        # RHN.logDebug("Case Insensitive Matching: %s : %s" % (pname.lower(), g.lower()) )
+                        match = fnmatch(pname.lower(), g.lower())
+                    else:
+                        # RHN.logDebug("Pattern Matching: %s : %s" %(pname, g))
+                        match = fnmatch(pname, g)
+                    if match:
+                        # so we have a pattern match on our name
+                        # architecture matching is a special case (no globbing, some translation may be required)
+                        RHN.logInfo("[%s] %s matched %s. Checking other exclusions" %(boxname, g, pname))
+                        if opts.arch:
+                            if not arch_match(opts.arch, p):
+                                continue
+                        # other property matching is done via key/value pairs
+                        if opts.version:
+                            if not key_match('version', opts.version, p, opts.lcase):
+                                continue
+                        if opts.release:
+                            if not key_match('release', opts.release, p, opts.lcase):
+                                continue
+                        # finally, we're still here, so append the package to our local results                                
+                        syspkgs.append(p)
+            # now we merge our packagelists back into the global results table
+            merge_results(boxname, syspkgs, results, RHN.logger)
+            count = boxlist.index(box) + 1
+            pbar.update(count)
+
+        print
+
+        if opts.json:
+            utils.dumpJSON(results, opts.json)
+            sys.exit(0)
+        if opts.csv:
+            dump_csv(results, opts.csv, opts.short)
+            sys.exit(0)
+
+        gen_report(results, shortnames=opts.short)
+
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
