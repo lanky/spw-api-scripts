@@ -4,7 +4,8 @@
 # RHN/Spacewalk XMLRPC API script
 # requires the python-rhnapi module
 #
-# Copyright 2009-2012 Stuart Sears
+# Copyright 2009-2012 Stuart Sears / Red Hat Inc.
+# Copyright 2013- Stuart Sears / Man Group PLC
 #
 # This file is part of spw-api-scripts
 #
@@ -19,18 +20,10 @@
 # for more details.
 #
 # You should have received a copy of the GNU General Public License along
-# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/
 
-__doc__ = """
-list-errata-for-package.py
-An RHN API package to provide free-form lucene package searches and print out
-the errata that provide a given package, to make cloning easier.
 
-Uses the rhnapi python module, so ensure this is on your PYTHONPATH
-The information this provides can be used to 
-"""
-
-__author__ = "Stuart Sears <sjs@redhat.com>"
+__author__ = "Stuart Sears <stuart.sears@man.com>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
 import sys
@@ -43,16 +36,32 @@ from optparse import OptionParser, OptionGroup
 from pprint import pprint
 # for sorting the results
 from operator import itemgetter
+# extracting elements from RPM file names
+from rpmUtils.miscutils import splitFilename
 
-
+# ---------------------------------------------------------------------------- #
+# Custom Python Modules
 import rhnapi
 from rhnapi import packages, errata
 
+# ---------------------------------------------------------------------------- #
+# core script configuration
 RHNHOST = 'localhost'
 RHNCONFIG = '~/.rhninfo'
-# put these in your configfile, dammit;
+# put these in your configfile, dammit
 RHNUSER = None
 RHNPASS = None
+
+# ---------------------------------------------------------------------------- #
+
+__doc__ = """
+%s
+An RHN API package to provide free-form lucene package searches and print out
+the errata that provide a given package, to make cloning easier.
+
+Uses the rhnapi python module, so ensure this is on your PYTHONPATH
+The information this provides can be used to 
+""" % os.path.basename(__file__)
 
 # ---------------------------------------------------------------------------- #
 
@@ -103,50 +112,23 @@ def parse_cmdline(argv):
         
 # ---------------------------------------------------------------------------- #
 
-def query_from_filename(fname):
+# ---------------------------------------------------------------------------- #
+
+def filename_to_query(fname):
     """
-    parses a standard RPM filename (with or without the '.rpm' extension)
-    returns a logical ANDed lucene query string like this:
-    'name:"name" AND version:"version" AND...'
-
-    TODO: this is much simpler with rpmUtils.miscutils.splitFileName(str)
+    temporary test using rpmUtils
     """
-    # an empty dict to store the values in - makes string formatting easier.
-    pkginfo = {}
-    # first, strip off the .rpm if it's there
-    if fname.endswith('.rpm'):
-        fname = os.path.splitext(fname)[0]
-
-    # pull the arch off the end
-    # for some reason this includes the '.', so strip it too.
-    fname, farch = os.path.splitext(fname)
-    if farch != '':
-        pkginfo['arch'] = farch.lstrip('.')
-
-    # now split by hyphens and work backwards (as names can contain - symbols too)
-    # This is quite ugly but appears to work
-    splitname = fname.split('-')
-
-    # the releas should be the last entry
-    pkginfo['release'] = splitname.pop()
-
-    # then the version string
-    version = splitname.pop()
-    pkginfo['name'] = '-'.join(splitname)
-    # if there's an epoch it'll be at the front of the version string
-    if len(version.split(':')) == 2:
-        pkginfo['epoch'], pkginfo['version'] = version.split(':')
-    else:
-        pkginfo['epoch'] = ''
-        pkginfo['version'] = version
-        
-    # return the dict parsed into a query string
+    try:
+        pkginfo = dict(zip(("name", "version", "release", "epoch", "arch"),splitFilename(fname)))
+    except Exception, E:
+        print "%s does not appear to be a valid RPM filename" % fname
+        sys.exit(1)
     strparts = []
     for k, v in pkginfo.iteritems():
-        # don't include any elements that were blank
-        if v != '':
-            strparts.append("%s:%s" % (str(k), v))
-    # finally, join it all together
+        if v == '':
+            continue
+        else:
+            strparts.append("%s:%s" %(k, v))
     return ' AND '.join(strparts)
 
 # ---------------------------------------------------------------------------- #
@@ -189,7 +171,7 @@ if __name__ == '__main__':
             querystr = opts.query
         # if called with a filename argument, use that
         elif opts.filename:
-            querystr = query_from_filename(opts.filename)
+            querystr = filename_to_query(opts.filename)
             print querystr
         # finally we parse the other nvrea args
         else:
