@@ -292,6 +292,8 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
         if kickstart.setKickstartTree(rhn, kslabel, kstree.get('label')):
             rhn.logInfo("set kickstart distribution to %(label)s" % kstree)
     else:
+        rhn.logError("ERROR creating kickstart tree %s" % kstree)
+
 
 # ---------------------------------------------------------------------------- #
 
