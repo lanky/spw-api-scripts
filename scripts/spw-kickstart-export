@@ -54,6 +54,7 @@ from rhnapi import activationkey
 # this needs editing to add the ID->name functionality:
 from rhnapi import systemgroup
 from rhnapi import utils
+from rhnapi import channel
 
 
 # --------------------------- Script Configuration --------------------------- #
@@ -143,8 +144,12 @@ def get_ks_details(rhn, ksobject, verbose = False):
     ksobject['custom_opts']           = kickstart.getCustomOptions(rhn, kslabel)
     # technically included in the base kickstart info:
     rhn.logDebug("* kickstart tree (distribution) information")
-    kstree                            = kickstart.getKickstartTree(rhn, kslabel)
-    ksobject['ks_tree']               = kickstart.getTreeDetails(rhn, kstree)
+    # wasted api call
+    # kstree                            = kickstart.getKickstartTree(rhn, kslabel)
+    treeinfo = kickstart.getTreeDetails(rhn, ksobject.get('tree_label'))
+    treeinfo['channel_label'] = channel.getDetails(rhn, treeinfo.get('channel_id')).get('label')
+    ksobject['ks_tree'] = treeinfo
+
     # list all the pre and post scripts
     rhn.logDebug("* pre and post scripts")
     ksobject['script_list']           = kickstart.listScripts(rhn, kslabel)
