@@ -28,7 +28,7 @@
 
 
 __doc__ = """
-spw-channel-patchlist
+spw-channel-patchsummary
 
 Designed to produce a list of unsynced errata from a source channel
 since the given start date (defaults to the first of the current calendar month)
@@ -38,20 +38,31 @@ Can read channel mappings from a JSON-format config file like this:
 [
     {   "group"    : "clone-rhel5"
         "errata"   : "ALL",
-        "source"   : "rhel-x86_64-server-5",
-        "chan"     : "clone-rhel-x86_64-server-5"
+        "base"   : "rhel-x86_64-server-5",
+        "source"     : "clone-rhel-x86_64-server-5"
         "children" : [
             {
                 "source" : "rhel-x86_64-server-productivity-5",
-                "chan"   : "clone-rhel-x86_64-server-productivity-5"
+                "label"   : "clone-rhel-x86_64-server-productivity-5"
             },
             {
                 "source" : "rhn-tools-rhel-x86_64-server-5",
-                "chan"   : "clone-rhn-tools-rhel-x86_64-server-5"
+                "label"   : "clone-rhn-tools-rhel-x86_64-server-5"
             }
         ]
     },
 ]
+UPDATE:
+    also reads YAML now, in this format
+rhel5-group:
+  base: clone-rhel-x86_64-server-5
+  source: rhel-x86_64-server-5
+  children:
+    - label: clone-rhel-x86_64-server-productivity-5
+      source: rhel-x86_64-server-productivity-5
+    - label: clone-rhn-tools-rhel-x86_64-server-5
+      source: rhn-tools-rhel-x86_64-server-5
+
 """
 __author__ = "Stuart Sears <stuart@sjsears.com>"
 
@@ -62,10 +73,6 @@ import time
 import csv
 from optparse import OptionParser, OptionGroup
 
-try:
-    import json
-except ImportError:
-    import simplejson as json
 
 # -------------------------- custom module imports --------------------------- #
 import rhnapi
