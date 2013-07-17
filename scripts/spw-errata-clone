@@ -96,6 +96,8 @@ def parse_cmdline(argv):
     errgrp = OptionGroup(parser, "Errata and Channel Options")
     errgrp.add_option("-c", "--channel",
         help="Channel LABEL to clone or publish errata to. Can be a comma-separated list. No spaces")
+    errgrp.add_option("--test", action="store_true", default=False,
+            help="Display errata that would be cloned/published")
     parser.add_option_group(errgrp)
 
 
@@ -145,9 +147,12 @@ def main():
         publish_list = []
         for erratum in errata_list:
             if rh_pattern.match(erratum):
+                RHN.logDebug("cloning RH Erratum %s" % erratum)
                 clone_list.append(erratum)
             else:
+                RHN.logDebug("publishing already cloned erratum %s" % erratum)
                 publish_list.append(erratum)
+
         print "Errata to clone: ", clone_list
         print "Errata to publish", publish_list
         # so, first we clone into our first channel, then publish into any others
@@ -159,14 +164,14 @@ def main():
             print "cloning Red Hat errata into %s" % clonedest
             
             # keep a list for publishing later:
-            new_clones = errata.clone(RHN, clonedest, clone_list)
+            new_clones = errata.cloneAsOriginal(RHN, clonedest, clone_list)
             # publish these into the remaining channels
             # we have more than one channel to clone/publish into...
             if len(channel_list) > 1:
                 RHN.logInfo("publishing newly cloned errata into other selected channels")
                 for erratum in [ x['advisory_name'] for x in new_clones ]:
                     RHN.logDebug("erratum: %s" % erratum)
-                    errata.publish(RHN, erratum, channel_list[1:])
+                    errata.publishAsOriginal(RHN, erratum, channel_list[1:])
 
             # now just publish all the other errata into all selected channels
             # this is done one erratum at a time, to multiple channels
@@ -174,7 +179,7 @@ def main():
             for erratum in publish_list:
                 if opts.verbose:
                     print "publishing previously cloned erratum %s into selected channels" % erratum,
-                data = errata.publish(RHN, erratum, channel_list)
+                data = errata.publishAsOriginal(RHN, erratum, channel_list)
                 if type(data) == dict:
                     if opts.verbose:
                         print " ...complete"
