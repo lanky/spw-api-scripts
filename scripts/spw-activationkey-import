@@ -120,7 +120,7 @@ def parse_cmdline(argv):
     keygrp.add_option("--list", action = "store_true", default = False, help = "List activation keys in file and exit [%default]")
     keygrp.add_option("-k", "--key", help = "Activation Key (the hyphenated 'hex string'). Can also take a comma-separated list. No spaces. If not specified, an attempt will be made to import all keys from your JSON file that do not currently exist on the satellite.")
     keygrp.add_option("-r", "--reactivation-keys", action = "store_true", default = False, help = "Import reactivation keys as well [%default]")
-    keygrp.add_option("-n", "--not-really", action = "store_true", default = False, help = "DRY RUN. Simply report what would happen.")
+    keygrp.add_option("--test", action = "store_true", default = False, help = "DRY RUN. Simply report what would happen.")
     keygrp.add_option("-i", "--interactive", action = "store_true", default = False, help = "Operate in interactive mode. Can be very tedious.")
     parser.add_option_group(keygrp)
 
@@ -375,7 +375,7 @@ def main():
                 print "Skipping Existing Activation Key '%(key)s'" % keyobj
                 continue
             else:
-                if opts.not_really:
+                if opts.test:
                     print "Would import key %(key)s [%(description)s]" % keyobj
                     continue
 

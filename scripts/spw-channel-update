@@ -112,7 +112,7 @@ The script makes use of a packageindex file in JSON format, to speed lookups. Th
         help = "Just report package differences per channel and exit")
     changrp.add_option("--redhat", action = "store_true", default = False,
         help = "Include Red Hat channels (starting with 'rhel' or 'rhn') in the sync process (default: No)")
-    changrp.add_option("-n", "--not-really", action = "store_true", default = False,
+    changrp.add_option("-n", "--test", action = "store_true", default = False,
         help = "Perform a dry-run and report actions that would have been attempted")
 
     parser.add_option_group(changrp)
@@ -210,7 +210,7 @@ def main(argv):
                                 failures.add(p)
                                 RHN.logDebug("%s is not present on this satellite, skipping it" % p)
                                 continue
-                        if opts.not_really:
+                        if opts.test:
                             print "would add package IDs %r to channel %s" %(syncme, label)
                             continue
                         else:
