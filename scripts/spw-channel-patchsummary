@@ -138,7 +138,7 @@ def parse_cmdline(argv):
     parser.add_option_group(rhngrp)
 
     # script-specific options
-    changrp = OptionGroup(parser, "Channel and Errata Selection Options")
+    changrp = OptionGroup(parser, "Channel Selection Options")
     changrp.add_option("-c", "--channel", help = "cloned channel label to summarise")
     changrp.add_option("-s", "--source", help = "Source channel (where CHANNEL was cloned from")
     changrp.add_option("-o", "--output", help = "Output File for results")
@@ -271,7 +271,7 @@ def diff_errata(rhn, chanobj, date, newest=False):
 
     if newest:
         rhn.logInfo("reducing list of errata to latest only (by synopsis)")
-        latest = latest_by_synopsis(results)
+        latest = latest_by_synopsis(results, rhn.logger)
         rhn.logDebug("Reduced errata list from %d to %d errata"  %(len(results), len(latest)))
         print "Found %d errata (latest only) for %s" %(len(latest), chanobj['label'])
         return latest
@@ -283,16 +283,57 @@ def diff_errata(rhn, chanobj, date, newest=False):
 
 # ---------------------------------------------------------------------------- #
 
-def latest_by_synopsis(errlist):
+def advisory_is_newer(advisory1, advisory2):
+    """
+    Simply splits up normal advisory strings and returns the newest one
+    This does proper integer comparisons on the numerical parts
+    returns True if advisory1 is newer, False if otherwise
+    """
+    # pull relevant info out of advisory names
+    val1 = advisory1.split('-')[1]
+    yr1, n1 = map(int, val1.split(':'))
+    # and the second one too
+    val2 = advisory2.split('-')[1]
+    yr2, n2 = map (int, val2.split(':'))
+
+    if yr1 < yr2:
+        return False
+    elif yr1 > yr2 :
+        return True
+    else:
+        if n1 > n2:
+            return True
+        else:
+            return False
+    # we should never get here
+    print "eeek. Out of cheese error!"
+    return False
+
+# ---------------------------------------------------------------------------- #
+
+def latest_by_synopsis(errlist, logger):
     # need to get a list of the latest errata with a given synopsis based on date
     index = {}
     for err in errlist:
-        syn = err.get('synopsis')
+        # we don't need the urgency here, as a newer 'important' erratum
+        # will also contain the fixes from earlier 'critical' ones
+        synsplit = err.get('synopsis').split(':')
+        if len(synsplit) > 1:
+            err['priority'] = synsplit[0].strip()
+            syn = synsplit[1].strip()
+        else:
+            syn = synsplit[0].strip()
+            err['priority']  = "None"
         name = err.get('advisory')
         if index.has_key(syn):
-            if name > index[syn]['advisory']:
+            curr = index[syn].get('advisory')
+            logger.debug("Entry for synopsis '%s' already exists [%s]. Comparing values." % (syn, curr))
+# debuggery logging
+            if advisory_is_newer(name, curr):
+                logger.debug("%s is newer than %s" %(name, curr))
                 index[syn].update(err)
             else:
+                logger.debug("%s is not newer than %s. Continuing" %(name, curr))
                 continue
         else:
             index[syn] = err
@@ -311,12 +352,19 @@ def reduce_errata(errlist, logger, priolist=[], typelist=[]):
     for e in errlist:
         delete = False
         if len(priolist) != 0:
-            e['prio'] = e.get('synopsis').split(':')[0].strip()
-            if e['prio'] == '':
-                logger.debug("%advisory)s has no assigned priority, skipping" % e)
+        # split up the synopsis on ':' characters
+        # this works even if there aren't any
+            synlist = [ x.strip() for x in e.get('synopsis').split(':', 1) ]
+        # if we have only one item, no priority was given
+            if len(synlist) == 1:
+                logger.debug("%(advisory)s has no assigned priority, skipping" % e)
+                e['priority'] = "None"
                 delete = True
-            elif e['prio'] not in priolist:
-                logger.debug("Skipping %(advisory)s due to priority selection [ %(prio)s ]" % e)
+            else:
+                e['priority'] = synlist[0].strip()
+
+            if e['priority'] not in priolist:
+                logger.debug("Skipping %(advisory)s due to priority selection [ %(priority)s ]" % e)
                 delete = True
         if len(typelist) != 0 :
             if e.get('advisory_type') not in typelist:
@@ -437,6 +485,7 @@ def main():
 
         # Default value for sanity
         channelmaps = None
+        channelinfo = None
 
         # find the appropriate channel mapping file
         # process each listed file until one works
@@ -461,7 +510,7 @@ def main():
                 if opts.info:
                     dump_mappings(channelmaps, opts.group)
                     sys.exit(0)
-                channelinfo = channelmaps.get(opts.group, {})                    
+                channelinfo = channelmaps.get(opts.group, None)                    
 
         else:
             # if not, use the command-line options provided
@@ -470,6 +519,19 @@ def main():
                             'source'   : opts.source,
                             'children' : [] 
                           }
+
+        if channelinfo is None:
+            if opts.channel and opts.source:
+                channelinfo = {
+                                'base' : {
+                                    'label'     : opts.channel,
+                                    'source'   : opts.source,
+                                },
+                                'children' : [] 
+                              }
+            else:
+                RHN.logError("Insufficient information provided. Without a group mapping, both channel and source labels are required")
+                sys.exit(2)
 
         # otherwise, process the groups selected
         # now process our channels and their sources:
