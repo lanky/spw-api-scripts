@@ -209,7 +209,7 @@ def label_to_name(label, capwords = CAPWORDS, archwords = ARCHWORDS):
     # at the moment these are the only arches we have...
     # arches = [ 'i386', 'x86_64' ]
     output = []
-    for word  in re.split('[-_]', label):
+    for word  in re.split('[-\s]', label):
         if word in capwords:
             output.append(word.upper())
         elif word in archwords:
@@ -271,7 +271,6 @@ def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
     logger(logging.Logger)  - a logger for reporting (probably rhnSession.logger)
     parent(str)             - label for parent of new cloned channel. Optional.
     """
-    logger.debug("Generating channel info for clone %s" % newlabel)
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     # template
     clonelabel = chanobj.get('clone_label', None)
@@ -281,6 +280,8 @@ def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
             clonelabel = newlabel
         else:
             clonelabel = "clone-%s" % chanobj.get('label')
+
+    logger.debug("Generating channel info for clone %s" % clonelabel)
 
     cloneobj = {
         'summary' : "Clone of %s, created on %s" %(chanobj['label'], timestamp),
@@ -293,6 +294,7 @@ def generate_clone_info(chanobj, logger, newlabel = None, parent = None):
 
     if chanobj['description'] != '':
         logger.debug("Adding description %(description)s" % chanobj)
+        cloneobj['description'] = chanobj['description']
     if chanobj['gpg_key_url'] != '':
         logger.debug("Adding GPG Key URL '%(gpg_key_url)s'" % chanobj)
         cloneobj['gpg_url'] = chanobj['gpg_key_url']
@@ -418,7 +420,7 @@ def main():
         if opts.recursive:
             # in recursive mode, the base channel (was opts.source) is the first entry
             # in our processed list of channel dicts
-            # actually we shouldn't have more than on unless we're in recursive mode.
+            # actually we shouldn't have more than one unless we're in recursive mode.
             basechan = chanmaps.pop(0)
             cloneparent = basechan.get('clone_label')
             RHN.logDebug("Recursive mode. Cloning all child channels of %(label)s" % basechan)
@@ -440,6 +442,8 @@ def main():
 # -------------------------- child channel cloning --------------------------- #
         for chanobj in chanmaps:
             cloneinfo = generate_clone_info(chanobj, RHN.logger, parent = cloneparent)
+            if opts.name:
+                cloneinfo['name'] = opts.name
             if channel.cloneChannel(RHN, chanobj['label'], opts.noerrata, **cloneinfo):
                 RHN.logInfo("successfully cloned %(label)s as %(clone_label)s" % chanobj)
             else:

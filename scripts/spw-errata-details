@@ -23,11 +23,10 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
-__doc__ = """
-%s
-API script template file.
-""" % os.path.basename(__file__)
-__author__ = "Your Name <email>"
+"""
+Simply prints out important details from a chosen erratum
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
 import os
@@ -36,6 +35,7 @@ from optparse import OptionParser, OptionGroup
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
+from rhnapi import errata
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -56,33 +56,16 @@ RHNPASS = None
 
 def parse_cmdline(argv):
     """
-    process and check commandline options and arguments.
-    Called against sys.argv[1:] to ignore the script name itself.
+    process the commandline :)
     """
-    def error(errlines, exitcode = 1):
-        """
-        parser-specific error handling
-        params:
-        errlines(list)      - list (or tuple/set) of lines in error message
-        exitcode(int)       - return code for exit statement.
-        """
-        print "\n".join(errlines)
-        parser.print_help()
-        sys.exit(exitcode)
-
-    preamble = """A short desrciption of what the script does. Will appear in --help output."""
-
-    usagestr = "%prog [RHNOPTS]"
-    
+    preamble = "A short desrciption of what the script does. Will appear in --help output."
+    usagestr = "%prog [RHNOPTS] ERRATUM..."
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
         help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
         help = "increase verbosity. Sets loglevel to INFO")
-    # this is not implemented in most scripts, but if you want it, remember to handle it below in main()
-    # parser.add_option("-q", "--quiet", action = "store_true", default = False,
-    #   help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -97,13 +80,8 @@ def parse_cmdline(argv):
     parser.add_option_group(rhngrp)
 
     # script-specific options - put these in their own OptionGroup
-    # e.g.
-    # mygrp = OptionGroup(parser, "Description of group")
-    # mygrp.add_option("-x", "--example", help="example option")
-    # parser.add_option_group(mygrp)
 
 
-    # by default
     if len(argv) == 0:
         parser.print_help()
         sys.exit(0)
@@ -117,9 +95,8 @@ def parse_cmdline(argv):
 # ---------------------------------------------------------------------------- #
 
 
-def main(argv):    
-    opts, args = parse_cmdline(argv[1:])
-
+def main():    
+    opts, args = parse_cmdline(sys.argv[1:])
     if opts.debug:
         rhnloglevel = 10
     elif opts.verbose:
@@ -127,11 +104,13 @@ def main(argv):
     else:
         rhnloglevel = 30
 
+    # initialise an RHN Session
+    # safety mechanism until the script actually works:
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
                                 )
         # did we give the --verbose switch?
         if opts.verbose:
@@ -140,13 +119,32 @@ def main(argv):
         # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
-        # DO STUFF with your RHN session and commandline options
+
+        for erratum in args:
+            RHN.logDebug("Fetching Package list for %s" % erratum)
+            errinfo = errata.getDetails(RHN, erratum)
+            if errinfo:
+                errpkgs = errata.listPackages(RHN, erratum)
+                print "Advisory: %s" % erratum
+                print "TOPIC"
+                print "---------------"
+                print errinfo['topic'].lstrip()
+                print "DESCRIPTION"
+                print "---------------"
+                print errinfo['description'].lstrip()
+                print "PACKAGES"
+                print "---------------"
+                for p in errpkgs:
+                    print "%(file)s" % p
+            print "=====================\n"
+                
+
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)
     
 if __name__ == '__main__':
-    main(sys.argv)
+    main()
 
 
 

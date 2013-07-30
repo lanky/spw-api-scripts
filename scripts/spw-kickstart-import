@@ -121,13 +121,16 @@ def parse_cmdline(argv):
         print "file %s does not appear to exist." % args[0]
         sys.exit(2)
     # check the args for errors etc...
+    if opts.kickstart:
+        # convert it to a list
+        opts.kickstart = opts.kickstart.split(',')
 
     ''# finally...
     return opts, args
 
 # ---------------------------------------------------------------------------- #
 
-def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
+def set_ks_details(rhn, ksobject, logscripts = False, interactive = False, verbose = False):
     """
     Work through the dict structure representing a kickstart profile, setting the
     various elements on the server.
@@ -140,7 +143,7 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     2. Pre and Post Scripts (recreated with content)
     3. File Preservation lists (by name)
     """
-    #    ksobject['ks_tree']               = kickstart.getKickstartTree(rhn, kslabel)
+
     # assuming the object already exists, fetch the label for ease of typing:
     kslabel = ksobject.get('label')
     rhn.logInfo("Processing kickstart label %s" % kslabel)
@@ -160,10 +163,8 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     rhn.logDebug("setting software list")
     if kickstart.setSoftwareList(rhn, kslabel, ksobject['software_list']):
         rhn.logInfo("software list added to kickstart")
-# this appears to have changed since the script was written.
-# updating it to work with 5.4.1
-# getCustomOptions returns a list of {'name' : 'custom', 'arguments' : line_content}
-# but setCustomOptions wants a list of str, one per line. Dumb.
+    # getCustomOptions returns a list of {'name' : 'custom', 'arguments' : line_content}
+    # but setCustomOptions wants a list of str, one per line. Dumb.
     rhn.logDebug("setting custom kickstart options")
     custopts = [ x.get('arguments', '') for x in ksobject['custom_opts'] ]
     if kickstart.setCustomOptions(rhn, kslabel, custopts):
@@ -171,7 +172,12 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
 
     rhn.logDebug("adding pre and post scripts")
     for script in ksobject['script_list']:
-        res = kickstart.addScript(rhn, kslabel, script['contents'], script['script_type'], script['chroot'], script['interpreter'])
+        res = kickstart.addScript(rhn, kslabel, 
+                                  contents = script.get('contents'), 
+                                  scripttype = script.get('script_type'), 
+                                  chroot = script.get('chroot'), 
+                                  interpreter = script.get('interpreter'),
+                                  template = script.get('template'))
         if isinstance(res, int):
             rhn.logInfo("added %s script number %d" % (script['script_type'], res))
         else:
@@ -195,6 +201,7 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
         rhn.logInfo("sucessfully set post-build registration to %(reg_type)s" % ksobject)
     #    ksobject['file_preservations']    = kickstart.listFilePreservations(rhn, kslabel)
     rhn.logDebug("importing file preservations")
+# abstract this
     if len(ksobject['file_preservations']) != 0:
         add_fpres = []
         for fpres in ksobject['file_preservations']:
@@ -216,6 +223,7 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
                     else:
                         print "could not create missing file preservation list %(name)s, skipping" % fpres
                         continue
+# end of file preservation creation bits                    
         # now we have a list of existing preservations to add, let's add them!
         for fp in add_fpres:
             if kickstart.addFilePreservations(rhn, kslabel, [ fp ]):
@@ -242,7 +250,7 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     rhn.logDebug("processing activation keys")
     for akey in ksobject['activation_keys']:
         # assume existing keys with the correct 'name' and 'description' are okay.
-        if (akey['description'], akey['key']) in existing_act_keys:
+        if (akey['description'], akey['key']) in existing_activation_keys:
             rhn.logInfo("activation key '%(description)s' (%(key)s)  exists on your satellite, adding it to the kickstart" % akey)
             if kickstart.addActivationKey(rhn, kslabel, akey['key']):
                 rhn.logInfo("successfully added key %(key)s" % akey)
@@ -264,12 +272,13 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
     # 1. check if they already exist in satellite.
     # 2. if so, add them to our kickstart
     # 3. if not, try to create them first, then add them to the kickstart
-    # 4. finall, FAIL and say so.
-
+    # 4. finally, FAIL and say so.
     for akey in ksobject['gpg_ssl_keys']:
-        if akey['description'] in existing_crypto_keys:
+        if akey in existing_crypto_keys:
+            rhn.logDebug("using existing key %(description)s" % akey)
             if kickstart.addCryptoKeys(rhn, kslabel, akey['description']):
                 rhn.logInfo('added key "%(description)s"' % akey)
+        # if it doesn't already exist, create it
         elif create_crypto_key(rhn, akey, interactive, verbose):
             rhn.logInfo("created new stored cryptokey %(description)s" % akey)
             if kickstart.addCryptoKeys(rhn, kslabel, akey['description']):
@@ -277,6 +286,22 @@ def set_ks_details(rhn, ksobject, interactive = False,verbose = False):
         else:
             rhn.logDebug("key %(description)s does not exist and I couldn't create it. skipping..." % akey)
             continue
+            
+# ---------------------------------------------------------------------------- #
+
+def create_kickstart_tree(rhn, treeobj):
+    """
+    Create a kickstartable distribution using the provided dict object
+    """
+    rhn.logInfo("Attempting to create kickstart distribution %(label)s" % treeobj)
+    if kickstart.createTree(rhn, treeobj.get('label'), 
+                            treeobj.get('abs_path'), 
+                            treeobj.get('channel_label'), 
+                            treeobj['install_type']['label']):
+        return True
+    else:
+        rhn.logError("error creating tree %(label)s" % treeobj)
+        return False
 
 # ---------------------------------------------------------------------------- #
 
@@ -286,7 +311,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
     This is complex... we have to
     1. create the key
     2. add base and child software channels
-       - if they don't already exist with teh correct labels,
+       - if they don't already exist with the correct labels,
          this will fail :)
     4. set config management options and channels
        - missing config channels are skipped
@@ -325,7 +350,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                 rhn.logDebug("Entitlements set appropriately")
 
         # add the key to our global activation key list to avoid having to do this again
-        existing_act_keys.append( (keyinfo['description'], keyid) )
+        existing_activation_keys.append( (keyinfo['description'], keyid) )
 
         if len(keyinfo['child_channel_labels']) > 0:
             rhn.logInfo("Adding child software channels")
@@ -378,10 +403,10 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
             add_groups = []
             for grp in keyinfo['server_groups']:
                 if grp['name'] in existing_system_groups:
-                    rhn.logInfo("- Server Group %(name)s exists locally, adding it" % grp )
+                    rhn.logInfo("- Server Group %(name)s already exists, adding it" % grp )
                     add_groups.append(grp)
                 else:
-                    rhn.logError("ERROR: server group %(name)s does not exist locally")
+                    rhn.logWarn("server group %(name)s does not exist" % grp)
                     # are we in interactive mode? This is passed all the way own from our commandline options
                     if interactive:
                         res = utils.promptConfirm('create missing system group %s (%s)' % (grp['name'], grp['description']))
@@ -389,18 +414,19 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
                         res = True
                    
                     if res:
+                        rhn.logInfo("Creating missing system group %(name)s" % grp)
                         newgrp = create_group(rhn, grp)
                         if newgrp is not None:
-                            rhn.logDebug("group '%(name)s' created" % newgrp)
+                            rhn.logDebug("Group '%(name)s' created" % newgrp)
                             existing_system_groups.append(newgrp['name'])
                             add_groups.append(newgrp)
                         else:
-                            print "could not create group %s, skipping" % grp
+                            rhn.logError("could not create group %(name)s, skipping" % grp)
                             continue
             for grp in add_groups:
                 rhn.logDebug("Adding existing system groups to key")
                 if activationkey.addGroupsByName(rhn, keyid, grp['name']):
-                    print "added group %s" % grp['name']
+                    rhn.logDebug("added group %(name)s" % grp)
         else:
             rhn.logInfo("No system group memberships specified.")
         return True
@@ -444,7 +470,7 @@ def create_ks(rhn, ksobject, verbose = False):
     Create a new basic KS profile with the bare minimal info
     createProfile(rhn, ksLabel, ksTree, rootPass, ksHost='', vtType='none')
     """
-    return kickstart.createProfile(rhn, ksobject['label'], ksobject['ks_tree'],TEMP_ROOT_PW)
+    return kickstart.createProfile(rhn, ksobject['label'], ksobject['tree_label'],TEMP_ROOT_PW)
 
 # ---------------------------------------------------------------------------- #
 
@@ -479,6 +505,53 @@ def ks_table(ksobjlist):
     for ksobj in ksobjlist:
         print fmtstr % ksobj
 
+
+# ---------------------------------------------------------------------------- #
+
+def enumerate_actkeys(rhn):
+    """
+    parse and return a list of existing activation key names and contents
+    """
+    react_re = re.compile(r".*re-?activation key.*", re.I)
+    rhn.logInfo("Enumerating activationkeys")
+    keylist = activationkey.listActivationKeys(rhn)
+    rhn.logDebug("stripping out reactivation keys")
+    return [ (k.get('description'), k.get('key')) for k in keylist if not react_re.match(k.get('description'))]
+
+
+# ---------------------------------------------------------------------------- #
+
+def enumerate_kstrees(rhn):
+    """
+    Parse and return a list of kickstart distributions
+    """
+    chan_re = re.compile(r"^rhel-.*", re.I)
+    distro_re = re.compile(r"^ks-rhel.*", re.I)
+    distros = []
+    rhn.logInfo("Enumerating kickstart distributions")
+    # unfortunately we have to wade through 2 separate steps for this.
+    kschannels = [ c for c in kickstart.listKickstartableChannels(rhn) if not chan_re.match(c.get('label')) ]
+    rhn.logDebug("Found %d non-RH kickstartable Channels" % len(kschannels))
+    for chan in kschannels:
+        kstrees = kickstart.listKickstartableTrees(rhn, chan.get('label'))
+        if len(kstrees) > 0:
+            distros.extend([ t for t in kstrees if not distro_re.match(t.get('label')) ])
+    rhn.logDebug("Found %d custom kickstart distributions" % len(distros))
+    return distros
+
+# ---------------------------------------------------------------------------- #
+
+def enumerate_cryptokeys(rhn):
+    """
+    Returns a detailed list of all GPG and SSL keys imported into the satellite
+    """
+    keylist = []
+    for cryptokey in kickstart.listAllCryptoKeys(rhn):
+        rhn.logDebug("Fetching info for %(type)s key %(description)s" % cryptokey)
+        keylist.append(kickstart.getCryptoKeyDetails(rhn, cryptokey.get('description')))
+    return keylist
+
+
 # ---------------------------------------------------------------------------- #
 
 def main():
@@ -511,10 +584,11 @@ def main():
 
     try:
         # variables for existing server info
-        global existing_act_keys
+        global existing_activation_keys
         global existing_crypto_keys
         global existing_system_groups
         global existing_file_preservations
+        global existing_kickstart_trees
 
         ## --- first, we work with the JSON file - we may not need to connect to RHN at all --- ##
         # there are a number of tasks we can perfom which only require the local JSON file:
@@ -524,19 +598,19 @@ def main():
 
         # if --list, we just read the data and dump a list of labels:
 
-# did we choose a kickstart profile (or list of them?)
+        # did we choose a kickstart profile (or list of them?)
         if opts.kickstart:
-            import_list = [ x for x in ksobjects if x['label'] in opts.kickstart.split(',') ]
+            import_list = [ x for x in ksobjects if x['label'] in opts.kickstart ]
 
-# if not, did we provide a glob pattern?            
+        # if not, did we provide a glob pattern?            
         elif opts.glob:
             import_list = [ x for x in ksobjects if fnmatch(x['label'], opts.glob) ]
 
-# failing that, we try to import all kickstarts from the JSON file            
+        # failing that, we try to import all kickstarts from the JSON file            
         else:
             import_list = ksobjects
 
-# do we only want to print out matching profiles?
+        # do we only want to print out matching profiles?
         if opts.list:
             ks_table(import_list)
             sys.exit(0)
@@ -568,26 +642,43 @@ def main():
 
         RHN.logInfo("Gathering information about existing elements")
         # get a list of existing kickstart profiles
-        RHN.logDebug("Existing kickstarts")
+        RHN.logInfo("Existing kickstarts")
         # this doesn't need to be global, we're only using it here...
         all_kickstarts = kickstart.listKickstarts(RHN)
         # suck just the labels out as these have to be unique
         remote_labels = [ x.get('label') for x in all_kickstarts ]
+        # extreme debuggery output
+        RHN.logInfo("Found %d Kickstart Pofiles" % len(remote_labels))
+        for l in remote_labels:
+            RHN.logDebug("Existing Kickstart: %s" % l)
 
-        RHN.logDebug("Existing activation keys (can take a long time)")
+        RHN.logInfo("Existing activation keys (can take a long time)")
         # make our list of activation keys accessible to all methods:
-        existing_act_keys = activationkey.listActivationKeyNames(RHN)
+        existing_activation_keys = enumerate_actkeys(RHN)
+        for k in existing_activation_keys:
+            RHN.logDebug("Existing Key: %s [%s]" % k)
 
-        RHN.logDebug("Existing Crypto (GPG and SSL) keys.",)
-        existing_crypto_keys = [ x['description'] for x in kickstart.listAllCryptoKeys(RHN) ]
+        RHN.logInfo("Existing Crypto (GPG and SSL) keys")
+        existing_crypto_keys = enumerate_cryptokeys(RHN)
+        for k in existing_crypto_keys:
+            RHN.logDebug("Existing %(type)s Key: %(description)s " % k)
 
-        RHN.logDebug("Existing system groups.",)
+        RHN.logDebug("Existing system groups.")
         # we only care about the names...
         existing_system_groups = [ x['name'] for x in systemgroup.listAllGroups(RHN) ]
+        RHN.logDebug("Found %d system groups" % len(existing_system_groups))
 
-        RHN.logDebug("Existing File Preservation Lists",)
+        RHN.logDebug("Existing File Preservation Lists")
         # we only care about the names...
         existing_file_preservations = [ x['name'] for x in kickstart.listAllFilePreservations(RHN) ]
+        RHN.logDebug("Found %d File Preservation Lists" % len(existing_file_preservations))
+        for fp in existing_file_preservations:
+            RHN.logDebug("Existing File Preservation: %s" % fp)
+
+        existing_ks_trees = enumerate_kstrees(RHN)
+        for kd in existing_ks_trees:
+            RHN.logDebug("KS Distribution: %(label)s" % kd)
+        existing_ks_tree_labels = [ t.get('label') for t in existing_ks_trees ]
 
         # ----------------- Now work with the JSON file ------------------------ #
 
@@ -599,6 +690,16 @@ def main():
             if ksobject['label'] in remote_labels:
                 RHN.logErr("kickstart label %(label)s already exists, skipping" % ksobject)
                 continue
+            if ksobject['tree_label'] in existing_ks_tree_labels:
+                RHN.logWarn("Kickstart distribution %(tree_label)s already exists, using it." % ksobject )
+                RHN.logWarn("Be sure to check it points to the correct installation tree.")
+            else:
+                if not create_kickstart_tree(RHN, ksobject.get('ks_tree')):
+                    RHN.logError("error creating tree %(label)s - you may need to create this manually" % treeobj)
+                    sys.exit(1)
+
+            # for debuggery
+        #    sys.exit(0)
             if create_ks(RHN, ksobject):
                 set_ks_details(RHN, ksobject, opts.interactive, opts.verbose)
                 
@@ -616,4 +717,4 @@ if __name__ == '__main__':
     main()
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
+# vim: set et ai smartindent ts=4 sts=4 sw=4 nofen ft=python:

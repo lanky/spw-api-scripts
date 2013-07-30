@@ -1,0 +1,255 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi and python-progressbar modules
+#
+# Copyright 2013 Stuart Sears / Man Group
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import re
+from optparse import OptionParser, OptionGroup
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import errata
+
+# -------------------- Script Docstrings and information --------------------- #
+__doc__ = """
+%s
+Satellite/Spacewalk API script to generate a diff of two channels.
+Reports on the following elements:
+* Errata (Assumes by default that 2 errata are identical if the YYYY:XXXX dates/numbers
+match)
+* Packages
+* Administrative Users
+""" % os.path.basename(__file__)
+
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+    def error(errlines, exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        if not isinstance (errlines, list):
+            print errlines
+        else:            
+            print "\n".join(errlines)
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """Produces a report on the differences between two channels, SOURCE and DEST
+considering Errata and Software packages.
+SOURCE can be any channel on your satellite, DEST must be a custom software channel.
+"""
+
+    usagestr = "%prog [RHNOPTS] SOURCE DEST"
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    # this is not implemented in most scripts, but if you want it, remember to handle it below in main()
+    # parser.add_option("-q", "--quiet", action = "store_true", default = False,
+    #   help = "Disable all logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    diffgrp = OptionGroup(parser, "Description of group")
+    diffgrp.add_option("-e", "--no-merge-errata", dest="dedupe", action="store_false", default=True,
+        help="Do NOT consider errata identical if their date & index numbers match (e.g. RHSA-2012:7788 == CLSA-2012:7788)")
+    diffgrp.add_option("-b", "--bi-directional", action="store_true", default=False,
+        help="Show a bidirectional diff (both forward and reverse). This will also show items in DEST that aren't in SOURCE")
+    parser.add_option_group(diffgrp)
+
+
+    # by default
+    if len(argv) == 0:
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    if len(args) != 2:
+        error("Insufficient information provided. Please provide both a source and a destination channel, in that order")
+
+    # finally...
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, args = parse_cmdline(argv[1:])
+    # we're already checking in parse_cmdline that there are exactly 2 of them
+    sourcechan, destchan = args
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+        # DO STUFF with your RHN session and commandline options
+        # first, some sanity checking:
+        all_channels = channel.listSoftwareChannels(RHN)
+        all_labels = [ x.get('label') for x in all_channels ]
+        # we can only push packages and errata to a custom channel, so check for provider names
+        my_labels = [ x.get('label') for x in all_channels if x.get('provider_name') != 'Red Hat, Inc.' ]
+
+# let's check if the channel labels provided actually exist or meet requirements.
+        srcfail = sourcechan not in all_labels
+        dstfail = destchan not in all_labels or destchan not in my_labels
+        chanfail = srcfail or dstfail
+        if srcfail:
+            print "ERROR: source channel %s does not appear to exist." % sourcechan
+        if dstfail:
+            print "ERROR: destination channel %s does not appear to exist or is not a custom channel." % destchan
+
+        if chanfail:
+            sys.exit(1)
+# now we can start processing the channels
+        RHN.logInfo("Fetching channel list for source channel %s" % sourcechan)
+        srcpkgs = set([ "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in channel.listAllPackages(RHN, sourcechan) ])
+        RHN.logInfo("Fetching package list for destination channel %s" % destchan)
+        dstpkgs = set([ "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in channel.listAllPackages(RHN, destchan) ])
+        RHN.logInfo("Fetching Errata list for source channel %s" % sourcechan)
+        srcerr = set( e.get('advisory') for e in channel.listErrata(RHN, sourcechan))
+        RHN.logInfo("Fetching Errata list for destination channel %s" % destchan)
+        dsterr = set( e.get('advisory') for e in channel.listErrata(RHN, destchan))
+        
+        pkgdiff_fwd = srcpkgs.difference(dstpkgs)
+        errdiff_fwd = srcerr.difference(dsterr)
+
+        # now we find all the packages provided by errata and remove them from the package diff.
+        RHN.logInfo("Removing packages provided by errata from forward diff")
+        for e in errdiff_fwd:
+            RHN.logDebug("Processing erratum %s" % e )
+            errpkgs = set( "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in errata.listPackages(RHN, e))
+            pkgdiff_fwd.difference_update(errpkgs)
+# forward diff is ALWAYS printed. This is standard            
+        print "Forward Diff (items in %s but not in %s)" %(sourcechan, destchan)
+        if len(pkgdiff_fwd) > 0:
+            print "Packages:"
+            print "---------"
+            print '\n'.join(pkgdiff_fwd)
+        else:
+            print "No packages differ"
+        print "--"
+        print "Errata:"
+        print "-------"
+        if len(errdiff_fwd) > 0:            
+            print '\n'.join(errdiff_fwd)
+        else:
+            print "No Errata differ"
+
+# if we didn't restrict ourselves to forward diffs, let's calculate the reverse one too
+        if opts.bi_directional:
+            RHN.logDebug("Calculating a reverse diff")
+            pkgdiff_rev = dstpkgs.difference(srcpkgs)
+            errdiff_rev = dsterr.difference(srcerr)
+
+            for e in errdiff_rev:
+                RHN.logDebug("Processing erratum %s" % e )
+                errpkgs = set( "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in errata.listPackages(RHN, e))
+                pkgdiff_rev.difference_update(errpkgs)
+        
+            print "------------------------------"
+            print "Reverse Diff (items in %s but not in %s)" %(destchan, sourcechan)
+            if len(pkgdiff_rev) > 0:
+                print "Packages:"
+                print "---------"
+                print '\n'.join(pkgdiff_rev)
+            else:
+                print "No packages differ"
+            print "--"
+            print "Errata:"
+            print "-------"
+            if len(errdiff_rev) > 0:            
+                print '\n'.join(errdiff_rev)
+            else:
+                print "No Errata differ"
+# end debug output        
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:

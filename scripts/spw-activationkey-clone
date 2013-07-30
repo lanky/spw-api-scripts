@@ -21,7 +21,7 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-spw_clone_activationkey
+spw-clone-activationkey
 
 A script to clone an activation key
 simply intended to copy it and all its settings to a new key, which we can then edit.

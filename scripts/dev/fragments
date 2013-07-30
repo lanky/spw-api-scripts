@@ -1,0 +1,47 @@
+
+# ---------------------------------------------------------------------------- #
+# --------------------------------- buffer s --------------------------------- #
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
+
+# ---------------------------------------------------------------------------- #
+
+# --------------------------------- buffer l --------------------------------- #
+
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+
+
+# ---------------------------------------------------------------------------- #
+
+# --------------------------------- buffer o --------------------------------- #
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+# ---------------------------------------------------------------------------- #
+
+# --------------------------------- buffer r --------------------------------- #
+        
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = not(opts.quiet),
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:

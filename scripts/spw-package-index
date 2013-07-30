@@ -4,7 +4,6 @@
 # RHN/Spacewalk XMLRPC API script
 # ** delete as appropriate below **
 # requires the python-rhnapi and python-progressbar modules
-# requires the python-rhnapi module
 #
 # Copyright YEAR AUTHOR
 #
@@ -23,10 +22,9 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
-__doc__ = """
-%s
+"""
 API script template file.
-""" % os.path.basename(__file__)
+"""
 __author__ = "Your Name <email>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
@@ -36,6 +34,13 @@ from optparse import OptionParser, OptionGroup
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
+from rhnapi import channel
+from rhnapi import utils
+# not sure if I need this yet
+# from rhnapi import packages
+
+# may remove some of these later
+from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -56,8 +61,7 @@ RHNPASS = None
 
 def parse_cmdline(argv):
     """
-    process and check commandline options and arguments.
-    Called against sys.argv[1:] to ignore the script name itself.
+    process the commandline :)
     """
     def error(errlines, exitcode = 1):
         """
@@ -66,13 +70,14 @@ def parse_cmdline(argv):
         errlines(list)      - list (or tuple/set) of lines in error message
         exitcode(int)       - return code for exit statement.
         """
+        print
         print "\n".join(errlines)
         parser.print_help()
         sys.exit(exitcode)
 
-    preamble = """A short desrciption of what the script does. Will appear in --help output."""
+    preamble = """Generates a package index file for the chosen satellite, using the API. This can be a longwinded process"""
 
-    usagestr = "%prog [RHNOPTS]"
+    usagestr = "%prog [RHNOPTS] OUTPUTFILE"
     
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
@@ -80,9 +85,10 @@ def parse_cmdline(argv):
         help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
         help = "increase verbosity. Sets loglevel to INFO")
-    # this is not implemented in most scripts, but if you want it, remember to handle it below in main()
-    # parser.add_option("-q", "--quiet", action = "store_true", default = False,
-    #   help = "Disable all logging and output")
+    parser.add_option('-p', '--progress', action = 'store_true', default = False,
+        help = "Show a progressbar for long-running operations")
+    parser.add_option('-f', '--force', action = 'store_true', default = False,
+        help = "Overwrite output file if it already exists.")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -96,29 +102,29 @@ def parse_cmdline(argv):
         help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
-    # script-specific options - put these in their own OptionGroup
-    # e.g.
-    # mygrp = OptionGroup(parser, "Description of group")
-    # mygrp.add_option("-x", "--example", help="example option")
-    # parser.add_option_group(mygrp)
-
-
-    # by default
-    if len(argv) == 0:
-        parser.print_help()
-        sys.exit(0)
-
     opts, args = parser.parse_args(argv)
+
     # check the args for errors etc...
+    # expecting outputfile on the command line
+    if len(args) != 1:
+        error(["ERROR: No output file provided."])
+    # barf if it already exists and we aren't forcibly overwriting it.
+    elif os.path.isfile(args[0]) and not opts.force:
+        error(["ERROR: Output file %s already exists" % args[0],
+               "Either remove or rename the file, or provide the '-f/--force' option to overwrite it"],
+               2)
+    else:
+        outfile = args[0]
+
 
     # finally...
-    return opts, args
+    return opts, outfile
         
 # ---------------------------------------------------------------------------- #
 
 
 def main(argv):    
-    opts, args = parse_cmdline(argv[1:])
+    opts, outputfile = parse_cmdline(argv[1:])
 
     if opts.debug:
         rhnloglevel = 10
@@ -141,6 +147,38 @@ def main(argv):
         if opts.debug:
             RHN.enableDebug()
         # DO STUFF with your RHN session and commandline options
+
+        chanlist = channel.listAllChannels(RHN)
+        maxlen = utils.getMaxLen(chanlist)
+        fmtstr = '%%(label)-%(label)ds' % maxlen
+        pkgindex = {}
+        print "Indexing unique packages by channel"
+
+        for chan in chanlist:
+            RHN.logInfo("Processing Channel %s (%s)" % (chan.get('label'), chan.get('name')))
+            if chan.get('packages', 0) != 0:
+                packagelist = channel.listAllPackages(RHN, chan.get('label'))
+            else:
+                RHN.logDebug("Channel %s contains no packages, skipping it" % chan.get('label'))
+                continue
+            if opts.progress:
+                widgets = [ fmtstr % chan, Counter(), ' Packages [', Percentage(), ']', '(', Timer(), ')']
+                pbar = ProgressBar(maxval = len(packagelist), widgets = widgets).start()
+            for p in packagelist:
+                k, v = '%(name)s-%(version)s-%(release)s.%(arch_label)s' % p, p.get('id')
+                if pkgindex.has_key(k):
+                    RHN.logDebug("Skipping existing package %s" % k)
+                else:
+                    pkgindex[k] = v
+                if opts.progress:
+                    pbar.update(packagelist.index(p) + 1 )
+        print                    
+        print "Done. %d unique packages indexed" % len(pkgindex)
+        print "Dumping to output file %s" % outputfile
+
+        utils.dumpJSON(pkgindex, outputfile)
+
+
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)

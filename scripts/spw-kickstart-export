@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# requires the python-rhnapi and python-progressbar modules
 # requires the python-rhnapi module
 #
 # Copyright 2009-2012 Stuart Sears
@@ -55,6 +54,7 @@ from rhnapi import activationkey
 # this needs editing to add the ID->name functionality:
 from rhnapi import systemgroup
 from rhnapi import utils
+from rhnapi import channel
 
 
 # --------------------------- Script Configuration --------------------------- #
@@ -143,8 +143,13 @@ def get_ks_details(rhn, ksobject, verbose = False):
     rhn.logDebug("* custom kickstart options")
     ksobject['custom_opts']           = kickstart.getCustomOptions(rhn, kslabel)
     # technically included in the base kickstart info:
-    rhn.logDebug("* kickstart tree label")
-    ksobject['ks_tree']               = kickstart.getKickstartTree(rhn, kslabel)
+    rhn.logDebug("* kickstart tree (distribution) information")
+    # wasted api call
+    # kstree                            = kickstart.getKickstartTree(rhn, kslabel)
+    treeinfo = kickstart.getTreeDetails(rhn, ksobject.get('tree_label'))
+    treeinfo['channel_label'] = channel.getDetails(rhn, treeinfo.get('channel_id')).get('label')
+    ksobject['ks_tree'] = treeinfo
+
     # list all the pre and post scripts
     rhn.logDebug("* pre and post scripts")
     ksobject['script_list']           = kickstart.listScripts(rhn, kslabel)
@@ -294,7 +299,11 @@ def main():
             outputfile = opts.file
 # if not, try naming it after the kickstart profiles we chose            
         elif opts.kickstart:
-            outputfile = '%s.json' % '_'.join(export_labels)
+            if len(export_labels) == 1:
+                outputfile = '%s.json' % '_'.join(export_labels)
+            else:
+# for multiple labels, we just use a generic filename, based on a timestamp
+                outputfile = "kickstart-export-%s.json" % time.strftime("%Y-%m-%d_%H%M%S")
 # failing that, just use a timestamp            
         else:
             outputfile = "kickstart-export-%s.json" % time.strftime("%Y-%m-%d_%H%M%S")

@@ -2,11 +2,9 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# ** delete as appropriate below **
-# requires the python-rhnapi and python-progressbar modules
 # requires the python-rhnapi module
 #
-# Copyright YEAR AUTHOR
+# Copyright 2012 (c)Stuart Sears <stuart.sears@man.com>
 #
 # This file is part of spw-api-scripts
 #
@@ -24,10 +22,12 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 __doc__ = """
-%s
-API script template file.
-""" % os.path.basename(__file__)
-__author__ = "Your Name <email>"
+spw-channel-dumppackagelist
+
+Script to list all packages in a channel (and optionally all child channels) on
+your RHN satellite or spacewalk server. Tested and working on RHN Satellite 5.4.1
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
 import os
@@ -36,6 +36,7 @@ from optparse import OptionParser, OptionGroup
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
+from rhnapi import channel
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -56,33 +57,17 @@ RHNPASS = None
 
 def parse_cmdline(argv):
     """
-    process and check commandline options and arguments.
-    Called against sys.argv[1:] to ignore the script name itself.
+    list All packages in a given channel in E:NVR.A format, outputting to a text file.
     """
-    def error(errlines, exitcode = 1):
-        """
-        parser-specific error handling
-        params:
-        errlines(list)      - list (or tuple/set) of lines in error message
-        exitcode(int)       - return code for exit statement.
-        """
-        print "\n".join(errlines)
-        parser.print_help()
-        sys.exit(exitcode)
-
-    preamble = """A short desrciption of what the script does. Will appear in --help output."""
-
-    usagestr = "%prog [RHNOPTS]"
-    
+    preamble = """Lists all packages in a channel, dumping to a text file.
+Useful for recreating channels on another box, or basic reporting"""
+    usagestr = "%prog [RHNOPTS] CHANNELLABEL"
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
     parser.add_option("--debug", action = "store_true", default = False,
         help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
         help = "increase verbosity. Sets loglevel to INFO")
-    # this is not implemented in most scripts, but if you want it, remember to handle it below in main()
-    # parser.add_option("-q", "--quiet", action = "store_true", default = False,
-    #   help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -97,19 +82,25 @@ def parse_cmdline(argv):
     parser.add_option_group(rhngrp)
 
     # script-specific options - put these in their own OptionGroup
-    # e.g.
-    # mygrp = OptionGroup(parser, "Description of group")
-    # mygrp.add_option("-x", "--example", help="example option")
-    # parser.add_option_group(mygrp)
+    pkggrp = OptionGroup(parser, "Package/Channel Options")
+    pkggrp.add_option("-d", "--destdir", dest = "dir", help = "destination directory for all output files.")
+    pkggrp.add_option("-r", "--recursive", action="store_true", default=False,
+        help="process all child channels of CHANNELLABEL. Creates one output file per channel.")
+    pkggrp.add_option("-l", "--latest", action="store_true", default=False,
+        help="List only the latest version for each package in the chosen software channels")
+    parser.add_option_group(pkggrp)
 
 
-    # by default
     if len(argv) == 0:
         parser.print_help()
         sys.exit(0)
 
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
+    if len(args) != 1:
+        print "ERROR: no channel label supplied"
+        parser.print_help()
+        sys.exit(1)
 
     # finally...
     return opts, args
@@ -117,9 +108,8 @@ def parse_cmdline(argv):
 # ---------------------------------------------------------------------------- #
 
 
-def main(argv):    
-    opts, args = parse_cmdline(argv[1:])
-
+def main():    
+    opts, args = parse_cmdline(sys.argv[1:])
     if opts.debug:
         rhnloglevel = 10
     elif opts.verbose:
@@ -127,11 +117,12 @@ def main(argv):
     else:
         rhnloglevel = 30
 
+    # initialise an RHN Session
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
                                 )
         # did we give the --verbose switch?
         if opts.verbose:
@@ -141,12 +132,64 @@ def main(argv):
         if opts.debug:
             RHN.enableDebug()
         # DO STUFF with your RHN session and commandline options
+        chanlabel = args[0]
+
+# does the channel we specified actually exist?
+        try:
+            RHN.logDebug("Looking up info for channel label %s" % chanlabel)
+            chanobj = channel.getDetails(RHN, chanlabel)
+            if not chanobj:
+                RHN.logError("No such channel: %s" % chanlabel)
+                sys.exit(3)
+            isparent = chanobj.get('parent_channel_label').strip() == '' 
+            chanlist = [ chanobj ]
+
+# are we in recursive mode and are there any child channels to list?            
+            if opts.recursive:
+                if not isparent:
+                    RHN.logError("Channel %s has no child channels" % chanlabel)
+                else:
+                    chanlist.extend(channel.listChildren(RHN, chanlabel))
+# process each channel at a time and dump a package list
+            for chan in chanlist:
+                if opts.dir:
+                    outputfile = os.path.join(opts.dir, "%s-pkglist.txt" % chan.get('label'))
+                else:
+                    outputfile = "%s-pkglist.txt" % chan.get('label')
+                RHN.logInfo("listing packages for channel %(label)s" % chan)
+                if opts.latest:
+                    packageobjs = channel.listLatestPackages(RHN, chan['label'])
+                else:                    
+                    packageobjs = channel.listAllPackages(RHN, chan['label'])
+
+                RHN.logDebug("Got %d packages" % len(packageobjs))
+                pkglist = []
+                for pkg in packageobjs:
+                    # RHN.logDebug("processing package ID %(id)d - %(name)s-%(version)s-%(release)s.%(arch_label)s" % pkg)
+                    if pkg['epoch'].strip() != '':
+                        pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s:%(epoch)s\n" % pkg
+                    else:
+                        pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s\n" % pkg
+                    RHN.logDebug("processed %s" % pkgstr.strip())
+                    pkglist.append(pkgstr)
+                try:
+                    RHN.logInfo("writing package list to %s" % outputfile)
+                    fd = open(outputfile, 'wb')
+                    fd.writelines(pkglist)
+                    fd.close
+                except:
+                    RHN.logErr("Failed to create output file %s" % outputfile)
+                    continue
+        except:
+            RHN.logError("Error getting channel details - does %s actually exist?" % chanlabel)
+            sys.exit(3)
+        
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)
     
 if __name__ == '__main__':
-    main(sys.argv)
+    main()
 
 
 

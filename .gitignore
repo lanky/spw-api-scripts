@@ -1,0 +1,6 @@
+MANIFEST
+ChangeLog
+build/
+dist/
+*.txt
+.*.swp

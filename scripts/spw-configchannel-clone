@@ -25,7 +25,7 @@
 # make backups first.
 
 __doc__ = """
-spw-configchannel-clone
+%s
 
 Clones configuration channels on an RHN Satellite / Spacewalk server.
 Process:
@@ -34,7 +34,7 @@ Process:
 * create and populate files, directories and symlinks, based on the old channel content
 
 In doing this you lose version history on the files in the new channel - only the latest revision is imported.
-"""
+""" % __file__
 
 __author__ = "Stuart Sears <sjs@redhat.com>"
 
@@ -67,9 +67,10 @@ def parse_cmdline(argv):
     give this sys.argv[1:] as an argument to avoid any issues with the script name
     being considered an 'argument' and processed
     """
-    preamble = """Clone a configuration channel as part of a release or promotion workflow. Or just for kicks.
-This script can cause damage to your satellite and should be used with care.
-
+    preamble = """Clone a configuration channel as part of a release or promotion workflow, or just for kicks.
+This script has the potential to cause damage to your satellite and should be used with care. For sanity, backup
+all existing configuration channels before running this and use the --list option to see what will be attempted
+before running it for real
     """
     usagestr = "%prog [OPTIONS] SOURCECHANNEL DESTCHANNEL"
     # initialise our parser and set some default options
@@ -96,13 +97,16 @@ This script can cause damage to your satellite and should be used with care.
     # script-specific options
     ccgrp = OptionGroup(parser, "Configuration Channel Options")
     ccgrp.add_option("--list", action="store_true", default=False,
-        help="List existing config channel labels and exit. In combination with --regex, also shows clone labels that would be created.")
+        help="List existing config channel labels and exit.")
+    ccgrp.add_option("--test", action="store_true", default=False,
+        help="List existing config channel labels and proposed clone labels - used to preview changes before applying them.")
     ccgrp.add_option("-u","--update", action="store_true", default = False,
         help="Update the content of existing destination channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-r","--replace", action="store_true", default = False,
         help="Replace (delete and recreate) existing destination channels, rather than skipping them. Use with caution.")
     ccgrp.add_option("-x", "--regex", default = False, action = "store_true",
-        help = "SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. Single quote them! Use with extreme caution. use --list first")
+        help = """SOURCECHANNEL and DESTCHANNEL are (python) regular expressions. 
+Single quote them! Use with extreme caution. Use --test first. Numbered capture groups can be used but should be double-escaped (e.g. \\\\1)""")
     ccgrp.add_option("-g", "--glob", help = "Shell-style glob pattern for selecting source channels")
     ccgrp.add_option("-p", "--prefix", help = "Prefix to prepend to source channel label to form clone label")
     ccgrp.add_option("-s", "--suffix", help = "Suffix to append to source channel label to form clone label")
@@ -279,33 +283,31 @@ def main():
             source_labels = [ x for x in existing_labels if fnmatch(x, opts.glob)]
             # let's start with the same as the source list
             dest_labels = list(source_labels)
+        else:
+            source_labels = existing_labels
+            dest_labels   = existing_labels
         
         if opts.prefix:
             dest_labels = [ '%s-%s' %(opts.prefix, x) for x in dest_labels ]
         if opts.suffix:
             dest_labels = [ '%s-%s' %(x, opts.suffix) for x in dest_labels ]
 
+# list and exit
         if opts.list:
-            if source_labels == dest_labels:
-                print "Existing Configuration Channels"
-                print "================================================="
-                print "\n".join(source_labels)
-            else:
-                maxlen = max([ len(x) for x in source_labels])
-                fmtstr = "%%-%ds => %%s" % maxlen
-                print "Matched Channels  ( => destination channel)"
-                print "================================================="
-                for pair in zip(source_labels, dest_labels):
-                    print fmtstr % pair
+            print "Existing Configuration Channels"
+            print "================================================="
+            print "\n".join(source_labels)
             sys.exit(0)
-# now we have no --list or --regex
-        else:
-            # convert args to a list
-            # technically this means we would support comma-separated lists of channel labels
-            # but we won't advertise that fact until we're sure it works
-            source_labels = args[0].split(',')
-            dest_labels = args[1].split(',')
-
+                
+# test changes and exit                
+        elif opts.test:                
+            maxlen = max([ len(x) for x in source_labels])
+            fmtstr = "%%-%ds => %%s" % maxlen
+            print "Existing Channel  ( => Cloned Channel)"
+            print "================================================="
+            for pair in zip(source_labels, dest_labels):
+                print fmtstr % pair
+            sys.exit(0)
 
 # ---------------------- Configuration Channel Cloning ----------------------- #
 # pair up the source and destination labels and process them

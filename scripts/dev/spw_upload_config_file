@@ -1,0 +1,197 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2009-2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+
+import sys
+import os
+from optparse import OptionParser, OptionGroup
+# Custom RHN Api Module
+import rhnapi
+from rhnapi import configchannel
+from rhnapi import system
+from rhnapi import utils
+
+__doc__ = """
+upload config files/directories to a given config channel
+kind of redundant in the face of rhncfg-manager, but useful for systems where that
+doesn't exist.
+"""
+
+RHNHOST = 'localhost'
+RHNCONFIG = '~/.rhninfo'
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+ent_maps = { 'provisioning_entitled' : 'provisioning',
+             'monitoring_entitled' : 'monitoring',
+             'virtualization_host' : 'virt',
+             'virtualization_platform' : 'virt-platform',
+}
+
+
+
+# --------------------------------------------------------------------------------- #
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    preamble = "Upload the given file to a configuration channel in your satellite. Default values in [] brackets"
+    usagestr = "%prog [RHNOPTS] [CONFIGFILEOPTS]"
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    parser.add_option("-q", "--quiet", action = "store_true", default = False,
+        help = "Disable all logging and output")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options
+    confgrp = OptionGroup(parser, "Config File Options", "Options controlling files to upload and their content")
+    confgrp.add_option("-c", "--channel", help="Configuration Channel label (required)")
+    confgrp.add_option("-p", "--path", help="path for deployment (destination path for file content)")
+    confgrp.add_option("-f", "--file", help="file to open for content. Must be readable by the current user.")
+    confgrp.add_option("-o", "--owner", help="Owner of file [ %default ]", default="root")
+    confgrp.add_option("-g", "--group", help="Group of file [ %default ]", default="root")
+    confgrp.add_option("-m","--perms", help="octal permissions (e.g. 0770) for this file [ %default ]", default="0644")
+    confgrp.add_option("-Z", "--context", help="SELinux security context (partial is okay. not required)")
+    confgrp.add_option("--macro-start", help="Macro start delimeter [ "%default" ]", default="{|")
+    confgrp.add_option("--macro-end", help="Macro end delimeter [ "%default" ]", default="|}")
+    confgrp.add_option("--test", action="store_true", default = False,
+        help = "Show what would be done, without actually doing anything")
+    confgrp.add_option("--create", action = "store_true", default = False,
+        help = "Create configuration channel if it does not exist. Dangerous. Use with --test first.")
+    confgrp.add_option("--list", action = "store_true", default = False,
+        help = "Simply list available configuration channels and exit.")
+    confgrp.add_option("--local", action = "store_const", dest="chantype", const=1,
+        help = "add this file to the current system's locally managed (override) configuration channel")
+    confgrp.add_option("--sandbox", action = "store_const", dest="chantype", const=0,
+        help = "add this file to the current system's sandbox configuration channel")
+    parser.add_option_group(confgrp)
+
+
+    opts, args = parser.parse_args()
+    # check the args for errors etc...
+    if not opts.file:
+        print "ERROR: You must supply a filename for me to read content from!"
+        sys.exit(1)
+
+    elif not os.path.isfile(opts.file):
+        print "ERROR: file %s does not appear to exist"
+        parser.print_help()
+        sys.exit(1)
+
+    if not opts.channel and not opts.chantype:
+        print "ERROR: you must specify a destination channel or one of the --local/--sandbox options"
+        parser.print_help()
+        sys.exit(1)
+
+    if not opts.path:
+        print "Missing Required parameter (path)"
+        print "using the absolute path to --file"
+        opts.path = os.path.abspath(opts.file)
+
+
+    # finally...
+    return opts, args
+
+# --------------------------------------------------------------------------------- #
+
+def main():    
+    opts, args = parse_cmdline(sys.argv)
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+
+    # initialiase an RHN Session
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+        # DO STUFF
+        RHN.logInfo("Enumerating existing configuration channels")
+        existing_chans = configchannel.listGlobalChannels(RHN)
+
+        if opts.list:
+            channel_table(existing_chans)
+
+        
+        if opts.channel not in existing_chans:
+            RHN.logError("The specified configuration channel '%s' does not exist" % opts.channel)
+            sys.exit(2)
+
+        try:
+            RHN.logInfo("reading content from file %s" % opts.file)
+            data = open(opts.file).read()
+        except OSError:
+            RHN.logError("could not open file %s to fetch contents" % opts.file)
+            sys.exit(3)
+
+        RHN.logInfo("uploading config file data to config channel %s" % opts.channel)
+
+        filedata = configchannel.createOrUpdatePath(RHN, label = opts.channel, path = opts.path,
+                                         content = data, owner = opts.owner, group = opts.group,
+                                         perms = opts.perms, context = opts.context,
+                                         isdir=False, macro_start=opts.macro_start, macro_end=opts.macro_end)
+
+        RHN.logInfo("file %(path)s created/updated. Now at revision %(revision)d" %  filedata
+        
+
+    # handles a ctrl-c interrupt:
+    except KeyboardInterrupt:
+        print "operation cancelled"
+        sys.exit(1)
+
+# ---------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    main()
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:

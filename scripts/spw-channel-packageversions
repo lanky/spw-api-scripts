@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# ** delete as appropriate below **
-# requires the python-rhnapi and python-progressbar modules
 # requires the python-rhnapi module
 #
 # Copyright 2012 Stuart Sears
@@ -180,17 +178,19 @@ def print_results(pkglist, chanlabel, showerrata = False):
     maxlen = utils.getMaxLen(pkglist)
 # to avoid messed-up formatting when there are no errata present, set defaults for
     for k in [ 'advisory', 'rhadvisory' ]:
-        if maxlen[k] < 14:
+        if maxlen.get(k, 14) < 14:
             maxlen[k] = 14
 
+    print "Matching Packages in channel %s" % chanlabel
     if showerrata:
         fmtstr = "%%(nvrea)-%(nvrea)ds %%(advisory)-%(advisory)ds %%(rhadvisory)-%(rhadvisory)ds" % maxlen
+        print fmtstr % {'nvrea' : 'Package NVRA', 'advisory' : 'Cloned Erratum', 'rhadvisory' : 'Red Hat Erratum' }
+        print fmtstr % {'nvrea' : '============', 'advisory' : '==============', 'rhadvisory' : '===============' }
     else:
         fmtstr = "%%(nvrea)-%(nvrea)ds" % maxlen
+        print fmtstr % {'nvrea' : 'Package NVRA' }
+        print fmtstr % {'nvrea' : '============' }
 
-    print "Matching Packages in channel %s" % chanlabel
-    print fmtstr % {'nvrea' : 'Package NVRA', 'advisory' : 'Cloned Erratum', 'rhadvisory' : 'Red Hat Erratum' }
-    print fmtstr % {'nvrea' : '============', 'advisory' : '==============', 'rhadvisory' : '===============' }
     for p in pkglist:
         print fmtstr % p
     print "--"        
@@ -259,8 +259,9 @@ def main():
             print_results(matching_packages, chanlabel, opts.errata)
                 
 
-        print "No packages matched the provided pattern in the following channels:"
-        print '\n'.join(failed_channels)
+        if len(failed_channels) > 0:
+            print "No packages matched the provided pattern in the following channels:"
+            print '\n'.join(failed_channels)
 
         
 

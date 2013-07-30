@@ -1,0 +1,236 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi module
+#
+# Copyright (c) Stuart Sears <stuart.sears@man.com>
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+__doc__ = """A quick script to parse a list of packages
+from channels on one satellite and update another accordingly (assuming all packages are present on the target satellite)
+Currently this requires a JSON-format input file containing a dict of all packages on the target, mapping NVR.A -> ID
+with entries like this:
+
+{ 'openssl-0.9.8b-10.el5.x86_64' : 3309 }
+
+This can be generated using spw-package-index. It takes a while.
+Package names to push are taken from input files, containing NVRA strings for each package.
+Can be pointed at an individual text file, with entries like this:
+NAME-VERSION-RELEASE.ARCH
+e.g.
+yum-kmod-1.1.10-9.el5.noarch
+
+If pointed at a directory, that directory is assumed to have one file per channel you wish to update, where the filenames 
+match channel labels in your satellite. Any files that do not match a channel label are simply ignored, so this should be
+safe.
+
+Essentially the script parses the NVRA strings, looks them up in the package index and then adds those packages to each
+destination channel, using the package ID numbers, assuming they aren't already present.
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import re
+from optparse import OptionParser, OptionGroup
+try:
+    import json
+except ImportError:
+    import simplejson as json
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import utils
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# pattern representing RH channel labels
+rhpatt = re.compile(r'^(rhel|rhn)-')
+pindex = os.path.expanduser('~/.rhn/packageindex')
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    usage = "%prog [RHNOPTS] [-c CHANNEL] DATASOURCE"
+    preamble = """Update/Synchronise selected channels with package names (in NVRA format) read from DATASOURCE.
+If DATASOURCE is a directory, filenames within that directory are assumed to match channel labels in your target satellite.
+Any that do not will be (silently, except in debug mode) ignored.
+If DATASOURCE is a file and --channel is not provided, the destination channel is assumed to be DATASOURCE (the filename)
+The script makes use of a packageindex file in JSON format, to speed lookups. This can be generated for your satellite using spw-package-index"""
+    parser = OptionParser(usage = usage, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "Save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "Log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    changrp = OptionGroup(parser, "Channel and input data options")
+    changrp.add_option("-c", "--channel", help = "Channel label to push packages to. Ignored if DATASOURCE is a directory")
+    changrp.add_option("-p", "--package-index", dest = "packageindex", help = "Path to package index file, in JSON format.")
+    changrp.add_option("-r", "--report", action = "store_true", 
+        help = "Just report package differences per channel and exit")
+    changrp.add_option("--redhat", action = "store_true", default = False,
+        help = "Include Red Hat channels (starting with 'rhel' or 'rhn') in the sync process (default: No)")
+    changrp.add_option("-n", "--test", action = "store_true", default = False,
+        help = "Perform a dry-run and report actions that would have been attempted")
+
+    parser.add_option_group(changrp)
+
+    opts,args = parser.parse_args(argv)
+
+    # argument and option sanity checks
+    if len(args) == 0:
+        print "ERROR: no DATASOURCE file or directory provided"
+        parser.print_help()
+        sys.exit(1)
+
+    elif os.path.isdir(args[0]):
+        filelist = [ os.path.join(args[0], x) for x in os.listdir(args[0]) ]
+    
+    elif os.path.isfile(args[0]):
+        # ensure any extraneous args are ignored
+        filelist = [ args[0] ]
+        if not opts.channel:
+            opts.channel = os.path.basename(args[0])
+    
+    else:
+        print "ERROR: %s does not appear to be either a file or a directory on this system" % args[0]
+        parser.print_help()
+        sys.exit(2)
+
+    if opts.packageindex:
+        if not os.path.isfile(opts.packageindex):
+            print "ERROR: package index file does not appear to exist"
+            parser.print_help()
+            sys.exit(3)
+    else:
+        print "ERROR: please provide a package index file as I haven't written the API script to do that yet :)"
+        parser.print_help()
+        sys.exit(3)
+
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
+    return opts, filelist
+
+
+# ---------------------------------------------------------------------------- #
+
+def main(argv):
+    opts, filelist = parse_cmdline(argv)
+
+    pindex = utils.loadJSON(opts.packageindex)
+
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=opts.loglevel,
+                                )
+        # did we give the --debug switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+        # we only care about channel labels in this instance:
+        chanlist =  [ x['label'] for x in channel.listSoftwareChannels(RHN) ]
+
+        failures = set()
+
+        for fname in filelist:
+            label = os.path.basename(fname)
+            if rhpatt.match(label) and not opts.redhat:
+                continue
+            if label in chanlist:
+                RHN.logInfo("Processing Channel %s" % label)
+                remotepkgs = set( [ x.strip() for x in open(fname).readlines() ])
+                localpkgs = set([ '%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in channel.listAllPackages(RHN, label) ])
+                remotepkgs.difference_update(localpkgs)
+                if len(remotepkgs) > 0:
+                    if opts.report:
+                            print "%s - %d missing packages" % ( label, len(remotepkgs) )
+                            print "------------------"
+                            print '\n'.join(remotepkgs)
+                            print
+                    else:
+                        syncme = []
+                        for p in remotepkgs:
+                            pid = pindex.get(p, None)
+                            if pid is not None:
+                                syncme.append(pid)
+                            else:
+                                failures.add(p)
+                                RHN.logDebug("%s is not present on this satellite, skipping it" % p)
+                                continue
+                        if opts.test:
+                            print "would add package IDs %r to channel %s" %(syncme, label)
+                            continue
+                        else:
+                            RHN.logInfo("Pushing %d packages to %s" %(len(syncme), label))
+                            if channel.addPackages(RHN, label, syncme):
+                                print "added %d packages to channel %s" %(len(syncme), label)
+                else:
+                    print "%s is synchronised" % label
+                    continue
+        if len(failures) != 0:
+            print "The following packages are not on your satellite and could not be synchronised"
+            print "\n".join(failures)
+
+
+    
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+
+# ---------------------------------------------------------------------------- #
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

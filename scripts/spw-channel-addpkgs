@@ -1,0 +1,223 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright (c) 2012 Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+
+"""
+spw-channel-addpkgs
+Adds the packages specified to a given channel, if they aren't already there.
+Expects (for the time being) an RPM package file name for each package you want to
+push to the channel.
+Packages must already exist on the satellite.
+
+Originally written to create a channel for Puppet Enterprise packages
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from rpmUtils.miscutils import splitFilename
+from optparse import OptionParser, OptionGroup
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import packages
+from rhnapi import utils
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    def error(errmsg = [], exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errmsg(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)     - return code for exit statement.
+        """
+        # I'll only call this with a list or a string, but just in case...
+        if isinstance(errmsg, (list, tuple, set)):
+            print "\n".join(errlines)
+        else:
+            print errmsg
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """Pushes specified RPM packages to a chosen software channel.
+The RPM packages must already exist on the server and are expected to be provided
+as full package names, e.g. package-1.0-1.arch.rpm"""
+
+    usagestr = "%prog [RHNOPTS] -c CHANNEL RPMPACKAGE..."
+
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # e.g.
+    mygrp = OptionGroup(parser, "Channel Selection")
+    mygrp.add_option("-c", "--channel", help="channel label(s) to push packages to. Can be a comma-separated list (without spaces)")
+    mygrp.add_option("-p", "--package-index", help="JSON-format pregenerated package index file (speeds things up enormously). Can be generated with spw-package-index.")
+    parser.add_option_group(mygrp)
+
+
+    # by default
+    if len(argv) == 0:
+        error()
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    if len(args) == 0:
+        error(["ERROR: insufficient information",
+               "You must provide at least one RPM package filename"],1)
+
+    if not opts.channel:
+        error("ERROR: no destination channel label provided.")
+    else:
+        # ensure we return a list, even if only one channel specified
+        opts.channel = opts.channel.split(',')
+
+    # finally...
+    return opts, args
+
+# ---------------------------------------------------------------------------- #
+
+def indexPackages(rhn, filenames, packageindex):
+    """
+    ensures that packageindex has an entry for the given filename, if that package
+    exists on the satellite/spacewalk server
+    params:
+    rhn             - authenicated RHN session object
+    filenames       - list of RPM package filenames
+    packageindex    - dict of filename => package ID mappings
+    """
+    for f in filenames:
+        if packageindex.has_key(f):
+            rhn.logDebug("package %s is already indexed" % f)
+            continue
+        else:
+            rhn.logInfo("looking up details for %s" % f)
+            name, ver, rel, epoch, arch = splitFilename(f)
+            res = packages.findByNvrea(rhn, name, ver, rel, arch, epoch)
+        # there really should be only one package precisely matching NVREA. Or None.
+            if len(res) != 0:
+                pkgid = res[0].get('id')
+                packageindex[f] = pkgid
+                continue
+        # if we get here, the package was not found on the satellite
+        rhn.logError("Package %s does not appear to exist on your satellite, skipping it.")
+
+    return packageindex
+
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):
+    opts, args = parse_cmdline(argv[1:])
+# just in case we point the script at a directory/*.rpm
+# not all that likely, but should be harmless
+    rpmlist = [ os.path.basename(x) for x in args ]
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                )
+        if opts.package_index:
+            pkgindex = utils.loadJSON(opts.package_index)
+
+        else:
+            pkgindex = {}
+
+        # list of package ids to push to our channel(s)
+        # update our index with the new package IDs, if any
+        pkgindex = indexPackages(RHN, rpmlist, pkgindex)
+
+        # get a list of package IDs
+        syncpkgs = [ pkgindex[x] for x in rpmlist if pkgindex.has_key(x) ]
+        # get a list of missing packages for possible reporting
+        missingpkgs = [ x for x in rpmlist if x not in pkgindex.keys() ]
+        if len(missingpkgs) > 0:
+            print "The following packages do not exist on your satellite/spacewalk server"
+            print "Please upload them manually using rhnpush or equivalent"
+            print "\n".join(missingpkgs)
+
+
+        if len(syncpkgs) != 0:
+            for chan in opts.channel:
+                RHN.logInfo("pushing %d packages to channel %s" %(len(syncpkgs), chan))
+                channel.addPackages(RHN, chan, syncpkgs)
+        else:
+            RHN.logInfo("No packages to sync")
+
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:

@@ -1,0 +1,239 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi module
+#
+# Copyright 2012 Stuart Sears <stuart.sears@man.com>
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+"""
+Show applicable errata/updates for a given system name
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import time
+from optparse import OptionParser, OptionGroup
+from operator import itemgetter
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import system
+from rhnapi import channel
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+DEFDATE = time.strftime("%Y-%m-01 00:00:00")
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    def error(errlines, exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        print "\n".join(errlines)
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """provides a list of relevant errata for each specified system, since the provided date.
+If no date is provided, the start of the current month is assumed"""
+
+    usagestr = "%prog [RHNOPTS] [-d DATE] SYSTEMNAME..."
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    mygrp = OptionGroup(parser, "Other Options")
+    mygrp.add_option("-d", "--date", default=DEFDATE,
+        help="List errata released since DATE, format: YYYY-MM-DD. [Default: %default]")
+    mygrp.add_option("-c", "--channel", help="Base channel label to check system(s) against (if not its registered base channel)")
+    mygrp.add_option("-p", "--priority", type="choice", choices=["Important", "Critical", "Moderate", "Low"],
+        help = "only show errata of the given priority (only applies properly to security errata) options: Critical|Important|Moderate|Low")
+    mygrp.add_option("--details", action="store_true", default=False,
+        help="Show detailed information about each erratum. This will be slow.")
+    parser.add_option_group(mygrp)
+
+    errgrp = OptionGroup(parser, "Errata Selection Options", "Select errata type to display. If multiple options are selected, the last one will probably win. Default is ALL errata.")
+    errgrp.add_option("--security", action="store_const", dest="errtype", const="Security Advisory",
+        help="Display only security errata")
+    errgrp.add_option("--bugfix", action="store_const", dest="errtype", const="Bug Fix Advisory",
+        help="Display only Bug Fix errata")
+    errgrp.add_option("--enhancement", action="store_const", dest="errtype", const="Product Enhancement Advisory",
+        help="Display only Product Enhancement (new feature) errata")
+    parser.add_option_group(errgrp)
+
+
+    # by default
+    if len(argv) == 0:
+        error([ "ERROR: please provide at least one registered system to check" ])
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    if not opts.date:
+        opts.date = time.strftime('%Y-%m-01 00:00:00')
+    else:
+        opts.date = '%s 00:00:00' % opts.date
+
+    # finally...
+    return opts, args
+
+
+# ---------------------------------------------------------------- #
+
+def write_csv(data, filename, logger):
+    """
+    moved out of the main function for portability
+    """
+    fields = ['advisory', 'synopsis', 'issue_date', 'urgency' ]
+    try:
+        if filename != sys.stdout:
+            fd = open(filename, 'wb')
+        else:
+            fd = filename
+        mywriter = csv.DictWriter(fd, fieldnames = fields, extrasaction = 'ignore')
+        fd.write("%s\n" % ','.join(fields))
+        for row in data:
+            syn = row['synopsis'].split(':')
+            if len(syn) == 2:
+                urg = syn[0]
+            else:
+                urg = 'None'
+            row['urgency'] = urg
+            mywriter.writerow(row)
+
+        if fd != sys.stdout:
+            fd.close()
+            logger.info("wrote %d lines to %s" %(len(data), filename))
+        return True            
+        
+    except:
+        logger.critical("ERROR: could not write to file %s" % filename)
+        return False
+
+# ---------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, args = parse_cmdline(argv[1:])
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                )
+        
+        for box in args:
+            syslist = system.getId(RHN, box)
+            if len(syslist) > 0:
+                sysid = syslist[0]['id']
+            else:
+                RHN.logError("unable to find system matching '%s'" % box)
+                continue
+            if sysid:
+                errlist = system.getRelevantErrata(RHN, sysid)
+                erradv = [ x.get('advisory_name') for x in errlist ]
+                # let's process all the system channels
+                if opts.channel:
+                    chan = opts.channel
+                else:
+                    chan = system.getBaseChannel(RHN, sysid)
+                # so, channel errata lists are far more detailed (and use different date formats. huh?) Than the system list.
+                RHN.logDebug("Listing errata for channel %s issued since %s" % (chan,opts.date))
+                chanerr = channel.listErrata(RHN, chan, start_date = opts.date)
+                RHN.logDebug("Got %d errata" % len(chanerr))
+                # reduce results by date and get the more detailed information available in the channel errata list
+                RHN.logDebug("Reducing errata to those issued after %s" % opts.date)
+                if opts.errtype:
+                    RHN.logDebug("Reducing errata to '%s' entries" % opts.errtype)
+                    errinfo = [ x for x in chanerr if x.get('advisory') in erradv and x.get('advisory_type') == opts.errtype ]
+                else:
+                    errinfo = [ x for x in chanerr if x.get('advisory') in erradv ]
+                    
+                RHN.logDebug("Now have %d relevant errata" % len(errinfo))
+
+                for e in sorted(errinfo, key=itemgetter('advisory'), reverse=True):
+                    print "%(issue_date)s %(advisory_type)s %(advisory)s %(synopsis)s" % e 
+
+
+                # if opts.errytpe:
+                    # reduce the list to only those of the given type:
+
+
+            
+            
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
