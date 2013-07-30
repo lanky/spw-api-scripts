@@ -1,0 +1,233 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi module
+#
+# Copyright 2013 Man Group / Stuart Sears
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import time
+from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
+from datetime import date
+from operator import itemgetter
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel
+from rhnapi import system
+from rhnapi import utils
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+# --------------------------- Docstrings etc --------------------------------- #
+
+__doc__ = """
+%s
+Lists (and optionally remove) inactive systems on your satellite/spacewalk server
+""" % os.path.basename(__file__)
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------------- Script Configuration --------------------------- #
+# put top-level/global variables for the script in here
+
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+    def error(errlines, exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        print "\n".join(errlines)
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """Lists and optionally deletes systems which have not checked 
+in for a specified number of days (default 7). Can optionally specify a pattern 
+(Shell-style wildcards) and/or a subscribed channel to limit the selection."""
+
+    usagestr = "%prog [RHNOPTS] [-p PATTERN] [-c CHANNEL ] [ -d DAYS ] [ --delete]"
+    
+# initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help="enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help="increase verbosity. Sets loglevel to INFO")
+
+# RHN Satellite options group
+# I wonder if it's possible to import this from elsewhere - all the scripts use it.
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+# create a separate options group for my script
+    sysgrp = OptionGroup(parser, "System Selection Options")
+    sysgrp.add_option("-d", "--days", default="7",
+        help="List systems whose last checkin was more than DAYS ago. [%default]")
+    sysgrp.add_option("-c", "--channel", help="Only process systems subscribed to the given channel")
+    sysgrp.add_option("-p", "--pattern", help="Only process systems matching the given pattern (shell wildcards)")
+    sysgrp.add_option("--delete", action="store_true", default=False,
+        help = "delete matching systems. Default is to simply list them. This is destructive, use with care. There is no confirmation prompt!")
+    parser.add_option_group(sysgrp)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    try:
+        opts.days = int(opts.days)
+    except ValueError:
+        error("Days should be an integer", 1)
+
+    # finally...
+    return opts, args
+
+# ---------------------------------------------------------------------------- #
+
+def system_report(systemlist, days):
+    """
+    print a pretty table of the inactive systems, sorted by date
+    params
+    systemlist  - list of dictionaries representing systems
+    """
+    maxlen = utils.getMaxLen(systemlist)
+    fmtstr = "%%(name)-%(name)ds | %%(id)-%(id)ds | %%(last_checkin)-%(last_checkin)ds | %%(days_since)-4s" % maxlen
+    print "Found %d inactive systems who last checked in %d days ago or earlier:" % (len(systemlist), days)
+    print fmtstr % { 'name' : 'Profile Name', 'id' : 'System ID', 'last_checkin' : 'Last Checkin' , 'days_since': 'Days'}
+    print fmtstr % { 'name' : '-'*maxlen['name'], 
+                     'id'   : '----------',
+                     'last_checkin' : '-' * maxlen['last_checkin'],
+                     'days_since' : '----',
+                   }
+    for s in systemlist:
+        # lck = time.strptime(s.get('last_checkin').value, "%Y%m%dT%H:%M:%S")
+        # s['last_checkin'] = time.strftime("%Y-%m-%d %H:%M:%S", lck)
+        print fmtstr % s
+        
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, args = parse_cmdline(argv[1:])
+
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server,
+                                opts.login,
+                                opts.password,
+                                config=opts.config, 
+                                savecreds=opts.cache, 
+                                debug=opts.debug,
+                                logfile = opts.logfile, 
+                                logenable = True,
+                                logname = os.path.basename(argv[0]),
+                                loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+        # DO STUFF with your RHN session and commandline options
+# first, let's get a list of systems
+        inactivesystems = system.listInactiveSystems(RHN, days=opts.days)
+
+        systemnames = set([x.get('name') for x in inactivesystems])
+        RHN.logDebug("Found %d systems whose last checkin was more than %d days ago" %(len(systemnames), opts.days))
+
+# remove all systems that don't match our pattern, if we provided one.
+        if opts.pattern:
+            RHN.logInfo("Matching inactive systems against provided pattern %s" % opts.pattern)
+            dumpme = set([x for x in systemnames if not fnmatch(x, opts.pattern)])
+            systemnames.difference_update(dumpme)
+            RHN.logInfo("Found %d systems" % len(systemnames))
+
+# now we have a shortened list, intersect it with the systems subscribed to a given channel
+        if opts.channel:
+            chanlist = [ x.get('label') for x in channel.listAllChannels(RHN) ]
+            if opts.channel not in chanlist:
+                RHN.logError("No such channel label: %s" % opts.channel)
+                sys.exit(2)
+            else:
+                chansystems = set( [ s['name'] for s in channel.listSubscribedSystems(RHN, opts.channel) ])
+                systemnames.intersection_update(chansystems)
+        
+        now = time.localtime()[0:3]
+        for s in inactivesystems:
+            lck = time.strptime(s.get('last_checkin').value, "%Y%m%dT%H:%M:%S")
+            last = lck[0:3]
+            delta = date(*now) - date(*last)
+            s['last_checkin'] = time.strftime("%Y-%m-%d %H:%M:%S", lck)
+            s['days_since'] = delta.days
+
+        matched_systems = sorted([ s for s in inactivesystems if s.get('name') in systemnames ], key=itemgetter('last_checkin'))
+            
+
+        system_report(matched_systems, opts.days)
+
+        if opts.delete:
+            RHN.logInfo("Deleting systems from satellite")
+            system.deleteSystems(RHN, [ x.get('id') for x in inactivesystems ])
+
+            
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python nofen:
