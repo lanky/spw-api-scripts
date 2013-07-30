@@ -254,6 +254,7 @@ def diff_errata(rhn, chanobj, date, newest=False):
     chanlabel (str)         - channel label
     source(str)             - SOURCE channel label (usually where 'chanlabel' was cloned from)
     date(str)               - list errata since the given date fmt: YYYY-MM-DD HH:MM:SS
+    newest(bool)            - whether to only consider the newest errata (based on synopsis)
     """
     chanlabel = chanobj.get('label')
     chansource = chanobj.get('source')
@@ -376,6 +377,7 @@ def reduce_errata(errlist, logger, priolist=[], typelist=[]):
             res.append(e)
 
     if len(res) < len(errlist):
+        print "Removed %d errata by type/priority selection. List now contains %d errata" %(len(errlist),len(res))
         logger.info("Type and priority selection reduced list from %d to %d errata" %(len(errlist),len(res)))
 
     return res
@@ -563,9 +565,13 @@ def main():
                 RHN.logDebug("%(advisory)s - %(advisory_type)s - %(synopsis)s" % err)
 
         # now we need to write a CSV file, use cvs.DictWriter, it'll be easier :)
-        print "Errata for %s since %s" %(opts.group, monthstart)
-        if write_csv(reduced_errata, opts.output, RHN.logger):
-            RHN.logInfo("CSV output successful")
+        if opts.group:
+            print "Errata for %s since %s" %(opts.group, monthstart)
+        if len(reduced_errata) > 0:
+            if write_csv(reduced_errata, opts.output, RHN.logger):
+                RHN.logInfo("CSV output successful")
+        else:
+            RHN.logInfo("No Errata to synchronise")
        
 
 
