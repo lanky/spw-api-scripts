@@ -222,6 +222,8 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------- #
 
         allkeys = activationkey.listActivationKeys(RHN)
+        # just the keys, to check our arguments
+        keynames = [ k.get('key') for k in allkeys ]
 
         if opts.list:
             print "%-40s   Description" % "Key"
@@ -232,6 +234,9 @@ if __name__ == '__main__':
             sys.exit(0)
         else:
             srckey = args[0]
+            if srckey not in keynames:
+                RHN.logError("Source activation key %s doesn't exist" % srckey)
+                sys.exit(2)
 
         # process the activation key we have been given
         # basic details
