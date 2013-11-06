@@ -80,6 +80,11 @@ def parse_cmdline(argv):
     parser.add_option_group(rhngrp)
 
     # script-specific options - put these in their own OptionGroup
+    errgrp = OptionGroup(parser, "Output options")
+    errgrp.add_option("-s", "--summary", action="store_true", default=False,
+        help="Show a brief summary of the erratum, not all details")
+    parser.add_option_group(errgrp)
+
 
 
     if len(argv) == 0:
@@ -119,12 +124,30 @@ def main():
         # debug dials up the logging some more
         if opts.debug:
             RHN.enableDebug()
-
+        errlist = []
+        sumstr = '%(advisory)-16s %(topic)s'
         for erratum in args:
             RHN.logDebug("Fetching Package list for %s" % erratum)
             errinfo = errata.getDetails(RHN, erratum)
             if errinfo:
-                errpkgs = errata.listPackages(RHN, erratum)
+                errinfo['advisory'] = erratum
+                errinfo['packages'] = '\n'.join([ "%(file)s" % pkg for pkg in  errata.listPackages(RHN, erratum)])
+#                errinfo['topic'] = errinfo['topic'].replace('\n', '\n                 ')
+                errlist.append(errinfo)
+
+        if len(errlist) == 0:
+            RHN.logError("No valid errata names found")
+            sys.exit(2)
+        
+        print errlist
+        if opts.summary:
+            print sumstr % { 'advisory' : 'Advisory', 'topic' : 'Topic' }
+            print sumstr % { 'advisory': '========', 'topic' : '=====' }
+            for e in errlist:
+                e['topic'] = e['topic'].replace('\n', '\n                 ')
+                print sumstr % e
+        else:
+            for e in errlist:
                 print "Advisory: %s" % erratum
                 print "TOPIC"
                 print "---------------"
@@ -134,10 +157,8 @@ def main():
                 print errinfo['description'].lstrip()
                 print "PACKAGES"
                 print "---------------"
-                for p in errpkgs:
-                    print "%(file)s" % p
+                print errinfo['packages']
             print "=====================\n"
-                
 
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
@@ -149,4 +170,4 @@ if __name__ == '__main__':
 
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:
