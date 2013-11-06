@@ -4,9 +4,8 @@
 # RHN/Spacewalk XMLRPC API script
 # ** delete as appropriate below **
 # requires the python-rhnapi and python-progressbar modules
-# requires the python-rhnapi module
 #
-# Copyright YEAR AUTHOR
+# Copyright 2013 Stuart Sears <stuart.sears@man.com>
 #
 # This file is part of spw-api-scripts
 #
@@ -170,52 +169,55 @@ def main(argv):
         pkgdiff.difference_update(dstindex.keys())
         RHN.logDebug("%d packages in %s but not in %s" %(len(pkgdiff), opts.source,opts.dest))
 
-        errlist = set([])
-        nonerrpkgs = set([])
-        count = 0
-        widgets = ['progress: ', Counter(), '/ %d Packages [' % len(pkgdiff), Percentage(), ']', Bar(), '(', Timer(), ')']
-        pbar = ProgressBar(widgets=widgets, maxval=len(pkgdiff), term_width=80).start()
-# do stuff
-        for pkg in pkgdiff:
-            count += 1
-            pkgobj = srcindex.get(pkg)
-            erratalist = packages.listProvidingErrata(RHN, pkgobj.get('id'))
-            if len(erratalist) == 0:
-                RHN.logDebug("Package %s does not appear to come from an erratum" % pkg)
-                nonerrpkgs.add(pkg)
-            else:
-                for e in erratalist:
-                    if e['advisory'] in srcerrata:
-                        RHN.logDebug("Adding %(advisory)s to sync list" % e)
-                        errlist.add(e['advisory'])
-                    else:
-                        RHN.logDebug("Cannot find Erratum %(advisory)s in source channel, ignoring" % e)
-            pbar.update(count)
-        print
-        print "Found %d Errata to Sync" % len(errlist)
-        print "Found %d packages not provided by errata" % len(nonerrpkgs)
-        print "\n".join(nonerrpkgs)
-        tstamp = time.strftime('%Y%m%d_%H%M%S')
-        outfile = '/tmp/%s-sync-data-%s.txt' % (opts.dest, tstamp)
-        try:
-            fd = open(outfile, 'wb')
-            if len(errlist) > 0:
-                print "%d Errata found" % len(errlist)
-                fd.writelines([
-                    "Errata to sync to %s\n" % opts.dest,
-                    "----------------------\n",
-                    ])
-                fd.writelines(["%s\n" % e for e in errlist])
-            if len(nonerrpkgs) > 0:
-                print "%d Packages (not from errata)" % len(nonerrpkgs)
-                fd.writelines([
-                    "Packages (not from Errata)\n",
-                    "--------------------------\n",
-                    ])
-                fd.writelines(["%s\n" % e for e in nonerrpkgs])
-            fd.close()
-        except:
-            print "unable to write to output file %s" % outfile
+        if len(pkgdiff) > 0:
+            errlist = set([])
+            nonerrpkgs = set([])
+            count = 0
+            widgets = ['progress: ', Counter(), '/ %d Packages [' % len(pkgdiff), Percentage(), ']', Bar(), '(', Timer(), ')']
+            pbar = ProgressBar(widgets=widgets, maxval=len(pkgdiff), term_width=80).start()
+
+            for pkg in pkgdiff:
+                count += 1
+                pkgobj = srcindex.get(pkg)
+                erratalist = packages.listProvidingErrata(RHN, pkgobj.get('id'))
+                if len(erratalist) == 0:
+                    RHN.logDebug("Package %s does not appear to come from an erratum" % pkg)
+                    nonerrpkgs.add(pkg)
+                else:
+                    for e in erratalist:
+                        if e['advisory'] in srcerrata:
+                            RHN.logDebug("Adding %(advisory)s to sync list" % e)
+                            errlist.add(e['advisory'])
+                        else:
+                            RHN.logDebug("Cannot find Erratum %(advisory)s in source channel, ignoring" % e)
+                pbar.update(count)
+            print
+            print "Found %d Errata to Sync" % len(errlist)
+            print "Found %d packages not provided by errata" % len(nonerrpkgs)
+            print "\n".join(nonerrpkgs)
+            tstamp = time.strftime('%Y%m%d_%H%M%S')
+            outfile = '/tmp/%s-sync-data-%s.txt' % (opts.dest, tstamp)
+            try:
+                fd = open(outfile, 'wb')
+                if len(errlist) > 0:
+                    print "%d Errata found" % len(errlist)
+                    fd.writelines([
+                        "Errata to sync to %s\n" % opts.dest,
+                        "----------------------\n",
+                        ])
+                    fd.writelines(["%s\n" % e for e in errlist])
+                if len(nonerrpkgs) > 0:
+                    print "%d Packages (not from errata)" % len(nonerrpkgs)
+                    fd.writelines([
+                        "Packages (not from Errata)\n",
+                        "--------------------------\n",
+                        ])
+                    fd.writelines(["%s\n" % e for e in nonerrpkgs])
+                fd.close()
+            except:
+                print "unable to write to output file %s" % outfile
+        else:
+            print "Channel package lists are identical, nothing to sync"
 
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
