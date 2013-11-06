@@ -136,6 +136,7 @@ lot of time"""
             help="Forcibly overwrite existing packages in the destination path. Default is to compare checksums and skip if identical")
     mygrp.add_option("-m", "--missing-only", action="store_true", default=False,
             help="Skip packages that already exist (default is to compare checksums)")
+    mygrp.add_option("--test", action="store_true", default=False, help="only print the packages that would be downloaded")
     parser.add_option_group(mygrp)
 
     opts, args = parser.parse_args(argv)
@@ -327,7 +328,8 @@ def check_digest(filepath, checksum, hashtype, logger):
             return False
     # okay, now we should have a hash object to work with
     # this is python 2.5+ only
-    with open(filepath, 'rb') as fd:
+    try:
+        fd = open(filepath, 'rb')
         fd.seek(0)
         while True:
             data = fd.read(h.block_size)
@@ -335,6 +337,8 @@ def check_digest(filepath, checksum, hashtype, logger):
                 break
             else:
                 h.update(data)
+    except:
+        raise
 
     mycksum = h.hexdigest()
     logger.debug("%s checksum of %s : %s" %(hashtype, os.path.basename(filepath), mycksum))
@@ -375,11 +379,11 @@ def download_packages(rhn, packagelist, excludelist, destdir, force=False, skip_
         if os.path.exists(dstfile):
             if skip_existing:
                 # we were told to ignore existing files
-                rhn.logInfo("%s exists, skipping it" % pkgname)
-                print "%s exists, not downloading it" % pkgname
+                if not test:
+                    rhn.logInfo("%s exists, skipping it" % pkgname)
+                    print "%s exists, not downloading it" % pkgname
                 continue
-            elif not force and check_hash:
-                #
+            elif check_hash and not force:
                 rhn.logInfo("%s appears to exist, comparing checksum against RHN" % pkgname)
                 pkginfo = packages.getDetails(rhn, pkg.get('id'))
                 rhn_hashtype = pkginfo.get('checksum_type')
@@ -387,18 +391,24 @@ def download_packages(rhn, packagelist, excludelist, destdir, force=False, skip_
                 if check_digest(dstfile, rhn_hash, rhn_hashtype, rhn.logger):
                     # file is the same, carry on
                     rhn.logInfo("%s exists and appears complete, not downloading" % pkgname)
-                    print "%s exists and appears complete, not downloading" % pkgname
+                    if not test:
+                        print "%s exists and appears complete, not downloading" % pkgname
                     done.add(pkg.get('id'))
                     continue
 # TODO: code duplication here needs reworking in the future
             else:
                 rhn.logDebug("Downloading from %s" % pkg_url)
-                mycurl.perform(pkg_url, progress=mycurl.textprogress)
+                if test:
+                    print pkgname
+                else:
+                    mycurl.perform(pkg_url, progress=mycurl.textprogress)
                 done.add(pkg.get('id'))
-        l
         else:
             rhn.logDebug("Downloading from %s" % pkg_url)
-            mycurl.perform(pkg_url, progress=mycurl.textprogress)
+            if test:
+                print pkgname
+            else:
+                mycurl.perform(pkg_url, progress=mycurl.textprogress)
             done.add(pkg.get('id'))
     return done
 
@@ -449,7 +459,11 @@ def main(argv):
                 else:
                     excludes = set()
 
-                download_packages(RHN, chanpkgs, excludes, dest, force=opts.force, skip_existing=opts.missing_only, check_hash=has_hashlib)                    
+                download_packages(RHN, chanpkgs, excludes, dest, 
+                                  force=opts.force, 
+                                  skip_existing=opts.missing_only, 
+                                  check_hash=has_hashlib,
+                                  test=opts.test)                    
 
                     
         if errcount == len(args):
