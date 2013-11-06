@@ -2,14 +2,16 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# ** delete as appropriate below **
 #
 # requires the python-rhnapi module and python-pycurl
+# on RHEL 5 you'll also require python-hashlib for
+# checksumming to work
 #
 # Copyright 2013 Stuart Sears <stuart.sears@man.com>
 #
 # This file is part of spw-api-scripts
-# the Curl downloader element is based upon work by Chris Oliver, found here:
+# 
+# The Curl downloader element is based upon work by Chris Oliver, found here:
 # http://excid3.com/blog/resume-downloads-with-pycurl-resume_from.html
 # and adapted slightly to handle SSL with satellite (no verification etc)
 # consequently the license version here has been bumped to 3 to tally with his work.
@@ -28,7 +30,11 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 SCRIPTNAME="spw-channel-download"
-
+"""
+%s
+API script template file.
+""" % SCRIPTNAME
+__author__ = "Stuart Sears <stuart.sears@man.com>"
 # --------------------- Python Standard Library Modules ---------------------- #
 import os
 import sys
@@ -38,6 +44,17 @@ import pycurl
 import time
 
 from optparse import OptionParser, OptionGroup
+# hashlib is built-in on RHEL6/python 2.6+
+# for the RHEL5 branch we also require the python-hashlib backport.
+try:
+    import hashlib
+    has_hashlib = True
+except ImportError:
+    has_hashlib = False
+    print "Cannot import hashlib module, checksum comparison will not be available"
+
+# progressbar
+from progressbar import ProgressBar, Bar, Counter, Timer, Percentage
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
@@ -57,11 +74,6 @@ RHNPASS = None
 
 # --------------------------- Script Configuration --------------------------- #
 # put global variables for the script in here
-__doc__ = """
-%s
-API script template file.
-""" % os.path.basename(__file__)
-__author__ = "Stuart Sears <stuart.sears@man.com>"
 
 DEFAULTDEST = os.path.abspath(os.curdir)
 
@@ -117,8 +129,13 @@ lot of time"""
     mygrp = OptionGroup(parser, "Download options")
     mygrp.add_option("-d", "--destdir", default=DEFAULTDEST,
         help="""destination directory for downloaded packages.  Per-channel directories will be created under here""")
+    mygrp.add_option("-x", "--exclude", metavar="FILENAME", help="Filename with packages to exclude, one per line in NVRA format")
     mygrp.add_option("-l", "--latest", action="store_true", default=False,
             help="Only download the latest version of each package")
+    mygrp.add_option("-f", "--force", action="store_true", default=False,
+            help="Forcibly overwrite existing packages in the destination path. Default is to compare checksums and skip if identical")
+    mygrp.add_option("-m", "--missing-only", action="store_true", default=False,
+            help="Skip packages that already exist (default is to compare checksums)")
     parser.add_option_group(mygrp)
 
     opts, args = parser.parse_args(argv)
@@ -164,7 +181,7 @@ class CurlDownloader(object):
             self.pco.setopt(pycurl.SSL_VERIFYHOST, 0)
         # TODO: proxy support
 
-    def perform(self, url, filename=None, resume=False, progress=None):
+    def perform(self, url, filename=None, resume=False, progress=None, count=None, total=None):
         """
         Do the actual download
         """
@@ -173,10 +190,13 @@ class CurlDownloader(object):
         if not filename:
             fname = url.strip("/").split("/")[-1].strip()
             if self.destdir is not None:
-                filename = os.path.join(self.destdir, fname)
+                filepath = os.path.join(self.destdir, fname)
             else:
-                filename = fname
-        self.filename = filename
+                filepath = fname
+        self.filepath = filepath
+        self.filename = os.path.basename(self.filepath)
+        self.total = total
+        self.count = count
 
         # Get resume information
         self.existing = self.start_existing = 0
@@ -189,9 +209,10 @@ class CurlDownloader(object):
             self.pco.setopt(pycurl.NOPROGRESS,       0)
             self.pco.setopt(pycurl.PROGRESSFUNCTION, progress)
 
+
         # Configure url and destination
         self.pco.setopt(pycurl.URL, url)
-        self.pco.setopt(pycurl.WRITEDATA, open(filename, "ab"))
+        self.pco.setopt(pycurl.WRITEDATA, open(self.filepath, "ab"))
 
         # Start
         self.pco.perform()
@@ -215,13 +236,15 @@ class CurlDownloader(object):
         # self.start existing = size when we started (For resuming downloads)
         downloaded = download_d + self.existing
         total      = download_t + self.start_existing
-        try:    frac = float(downloaded)/float(total)
-        except: frac = 0
+        try:    
+            frac = float(downloaded)/float(total)
+        except: 
+            frac = 0
 
         bar = "=" * int(25*frac)
 
         sys.stdout.write("\r%-30.30s %3i%% |%-25.25s| %5sB/%5sB" %
-            (os.path.basename(self.filename),
+            (self.filename,
              frac*100,
              bar,
              format_number(downloaded),
@@ -270,15 +293,71 @@ def format_number(number, SI=0, space=' '):
 
 # ---------------------------------------------------------------------------- #
 
-def download_packages(rhn, packagelist, destdir):
+def check_digest(filepath, checksum, hashtype, logger):
     """
-    Creates a curl downloder object and then attempts to download all packages
+    description:
+    generates a checksum of the given file and compares it to
+    a checksum from RHN.
+    
+    parameters:
+    filepath(str)    - path to the local file on disk
+    checksum(str)    - checksum from rhn package info
+    hashtype(str)    - checksum type from rhn package info
+    # currently we support md5, sha1, sha256, sha512 
+    logger(logging.Logger) - logger object to report output etc
+
+    returns:
+    bool    - True if hashes match, False if they don't
+    """
+    # this looks clunky, but apparently the built-in versions
+    # are significantly faster than the generic hash function
+    if hashtype.lower() == 'md5':
+        h = hashlib.md5()
+    elif hashtype.lower() == 'sha1':
+        h = hashlib.sha1()
+    elif hashtype.lower() == 'sha256':
+        h = hashlib.sha256()
+    elif hashtype.lower() == 'sha512':
+        h = hashlib.sha512()
+    else:
+        try:
+            h = hashlib.new(hashtype.lower())
+        except ValueError:
+    # we can't compare checksums if we don't support the checksum type.
+            return False
+    # okay, now we should have a hash object to work with
+    # this is python 2.5+ only
+    with open(filepath, 'rb') as fd:
+        fd.seek(0)
+        while True:
+            data = fd.read(h.block_size)
+            if not data:
+                break
+            else:
+                h.update(data)
+
+    mycksum = h.hexdigest()
+    logger.debug("%s checksum of %s : %s" %(hashtype, os.path.basename(filepath), mycksum))
+    if mycksum == checksum:
+        return True
+    else:
+        return False
+
+# ---------------------------------------------------------------------------- #
+
+def download_packages(rhn, packagelist, excludelist, destdir, force=False, skip_existing=False, check_hash=True):
+    """
+    Creates a curl downloader object and then attempts to download all packages
     from the specified list to the chosen destdir
 
     parameters:
-    rhn             - authenticated rhnapi.rhnSession object
-    packagelist     - list of dict (packages from the RHN API)
-    destdir         - output directory (must exist and be writable)
+    rhn                 - authenticated rhnapi.rhnSession object
+    packagelist         - list of dict (packages from the RHN API)
+    excludelist         - list or set of NVR.A strings to exclude from downloads
+    destdir             - output directory (must exist and be writable)
+    force(bool)         - force overwrite existing files
+    skip_existing(bool) - ignore existing files (Overrides force)
+    check_hash(bool)    - whether to compare checksums or not
     """
     done = set()
     mycurl = CurlDownloader(destdir=destdir, insecure=True)
@@ -286,14 +365,45 @@ def download_packages(rhn, packagelist, destdir):
     # might want to upgrade to batches with threads eventually 
     print "%d packages to download" % len(packagelist)
     for pkg in packagelist:
-        purl = packages.getPackageUrl(rhn, pkg.get('id'))
-        rhn.logDebug("Downloading from %s" % purl)
-        mycurl.perform(purl, progress=mycurl.textprogress)
-        done.add(pkg.get('id'))
+        pkg_url = packages.getPackageUrl(rhn, pkg.get('id'))
+        pkgname = "%(name)s-%(version)s-%(release)s.%(arch_label)s.rpm" % pkg
+        if pkgname in excludelist:
+            rhn.logInfo("%s is on our excludes list, ignoring it")
+            continue
+        dstfile = os.path.join(destdir, pkgname)
+        # if our output file exists and we aren't forcibly overwriting it:
+        if os.path.exists(dstfile):
+            if skip_existing:
+                # we were told to ignore existing files
+                rhn.logInfo("%s exists, skipping it" % pkgname)
+                print "%s exists, not downloading it" % pkgname
+                continue
+            elif not force and check_hash:
+                #
+                rhn.logInfo("%s appears to exist, comparing checksum against RHN" % pkgname)
+                pkginfo = packages.getDetails(rhn, pkg.get('id'))
+                rhn_hashtype = pkginfo.get('checksum_type')
+                rhn_hash = pkginfo.get('checksum')
+                if check_digest(dstfile, rhn_hash, rhn_hashtype, rhn.logger):
+                    # file is the same, carry on
+                    rhn.logInfo("%s exists and appears complete, not downloading" % pkgname)
+                    print "%s exists and appears complete, not downloading" % pkgname
+                    done.add(pkg.get('id'))
+                    continue
+# TODO: code duplication here needs reworking in the future
+            else:
+                rhn.logDebug("Downloading from %s" % pkg_url)
+                mycurl.perform(pkg_url, progress=mycurl.textprogress)
+                done.add(pkg.get('id'))
+        l
+        else:
+            rhn.logDebug("Downloading from %s" % pkg_url)
+            mycurl.perform(pkg_url, progress=mycurl.textprogress)
+            done.add(pkg.get('id'))
     return done
 
-
-
+    
+# ---------------------------------------------------------------------------- #
 
 def main(argv):
     opts, args = parse_cmdline(argv[1:])
@@ -329,7 +439,17 @@ def main(argv):
                         RHN.logError("Could not create destination directory %s" % dest)
                         print "Could not create destination directory %s" % dest
                         sys.exit(3)
-                download_packages(RHN, chanpkgs,dest)                    
+
+                if opts.exclude:
+                    try:
+                        excludes = set([p.strip() for p in open(opts.exclude).readlines()])
+                    except:
+                        RHN.logError("unable to read excludes file %s" % opts.excludes)
+                        excludes = set()
+                else:
+                    excludes = set()
+
+                download_packages(RHN, chanpkgs, excludes, dest, force=opts.force, skip_existing=opts.missing_only, check_hash=has_hashlib)                    
 
                     
         if errcount == len(args):
@@ -347,4 +467,4 @@ if __name__ == '__main__':
 
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
+# vim: set et cindent ts=4 sts=4 sw=4 nofen ft=python:

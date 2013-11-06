@@ -23,10 +23,12 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
+# customise this part
+scriptname = "apiscript"
 __doc__ = """
 %s
 API script template file.
-""" % os.path.basename(__file__)
+""" % scriptname
 __author__ = "Your Name <email>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
@@ -36,7 +38,7 @@ from optparse import OptionParser, OptionGroup
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
-
+# from rhnapi import...
 # -------------------------- RHN API Configuration --------------------------- #
 
 # server hostname and config file location
@@ -66,11 +68,14 @@ def parse_cmdline(argv):
         errlines(list)      - list (or tuple/set) of lines in error message
         exitcode(int)       - return code for exit statement.
         """
-        print "\n".join(errlines)
+        if isinstance(errlines, list):
+            print "\n".join(errlines)
+        else:
+            print errlines
         parser.print_help()
         sys.exit(exitcode)
 
-    preamble = """A short desrciption of what the script does. Will appear in --help output."""
+    preamble = """A short description of what the script does. Will appear in --help output."""
 
     usagestr = "%prog [RHNOPTS]"
     
@@ -80,9 +85,6 @@ def parse_cmdline(argv):
         help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
         help = "increase verbosity. Sets loglevel to INFO")
-    # this is not implemented in most scripts, but if you want it, remember to handle it below in main()
-    # parser.add_option("-q", "--quiet", action = "store_true", default = False,
-    #   help = "Disable all logging and output")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -110,6 +112,12 @@ def parse_cmdline(argv):
 
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
 
     # finally...
     return opts, args
@@ -120,26 +128,13 @@ def parse_cmdline(argv):
 def main(argv):    
     opts, args = parse_cmdline(argv[1:])
 
-    if opts.debug:
-        rhnloglevel = 10
-    elif opts.verbose:
-        rhnloglevel = 20
-    else:
-        rhnloglevel = 30
 
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
                                 config=opts.config, savecreds=opts.cache, debug=opts.debug,
                                 logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(argv[0]), loglevel=rhnloglevel,
+                                logname = scriptname, loglevel=opts.loglevel,
                                 )
-        # did we give the --verbose switch?
-        if opts.verbose:
-            RHN.enableVerbose()
-
-        # debug dials up the logging some more
-        if opts.debug:
-            RHN.enableDebug()
         # DO STUFF with your RHN session and commandline options
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
@@ -151,4 +146,4 @@ if __name__ == '__main__':
 
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:
