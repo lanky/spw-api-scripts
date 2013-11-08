@@ -1,0 +1,197 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi and python-progressbar modules
+#
+# Copyright 2013 Stuart Sears / Man Group PLC
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+# customise this part
+scriptname = "apiscript"
+__doc__ = """
+%s
+API script template file.
+""" % scriptname
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+import time
+from optparse import OptionParser, OptionGroup
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import systemgroup
+from rhnapi import utils
+from rhnapi import user
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+    def error(errlines, exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        if isinstance(errlines, list):
+            print "\n".join(errlines)
+        else:
+            print errlines
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """Adds a system group to your satellite, if it doesn't already exist"""
+
+    usagestr = "%prog [RHNOPTS] GROUPNAME..."
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    mygrp = OptionGroup(parser, "Group details", "Admins can be a comma-separated list (without spaces)")
+    mygrp.add_option("-d", "--description", help="Group description")
+    mygrp.add_option("-a", "--admins", 
+        help="Existing users to add as group admins (ignores users that don't exist). Comma-separated list, no spaces.")
+    mygrp.add_option("-b", "--batch", action="store_true", default=False, 
+        help="run in batch mode (without prompting for missing information)")
+    parser.add_option_group(mygrp)
+
+
+    # by default
+    if len(argv) == 0:
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+    if opts.admins:
+        opts.admins = set(opts.admins.split(','))
+
+    # finally...
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, args = parse_cmdline(argv[1:])
+
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = scriptname, loglevel=opts.loglevel,
+                                )
+        # DO STUFF with your RHN session and commandline options
+        existing_groups = [ g.get('name') for g in systemgroup.listAllGroups(RHN) ]
+        if opts.admins:
+            existing_users = set([ u.get('login') for u in user.listUsers(RHN) ])
+            diff = opts.admins.difference(existing_users)
+            if len(diff) != 0:
+                RHN.logError("Users %s do not exist on this satellite, ignoring them" % ','.join(diff))
+                opts.admins.difference_update(diff)
+
+        if not opts.description:
+            if opts.batch:
+                opts.description = "Created on %s" % time.strftime("%Y-%m-%d %H:%M")
+            else:
+                opts.description = None
+
+        for grp in args:
+            if grp in existing_groups:
+                RHN.logInfo("Group %s already exists, nothing to do" % grp)
+                continue
+            else:
+                if opts.description is None:
+                    description = utils.promptMissing("Description for group %s: " % grp)
+                else:
+                    description = opts.description
+                RHN.logDebug("Adding group %s" % grp)
+                grpinfo = systemgroup.create(RHN, grp, description)
+                if grpinfo:
+                    RHN.logInfo("Successfully created group %(name)s with description %(description)s" % grpinfo)
+                    if opts.admins and len(opts.admins) > 0:
+                        if systemgroup.addAdmins(RHN, grp, list(opts.admins)):
+                            RHN.logInfo("Succesfully added %s as admins of %s" %(','.join(opts.admins), grp))
+                        else:
+                            RHN.logError("Failed to add admins to system group %s" % grp)
+                else:
+                    RHN.logError("Failed to create group %s" % grp)
+                    continue
+
+
+
+
+
+        
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:
