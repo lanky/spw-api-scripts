@@ -3,6 +3,7 @@
 #
 # RHN/Spacewalk XMLRPC API script
 # requires the python-rhnapi module
+# and the python-progressbar module
 #
 # Copyright 2009-2012 Stuart Sears / Red Hat Inc.
 # Copyright 2013- Stuart Sears / Man Group PLC
@@ -11,7 +12,7 @@
 #
 # spw-api-scripts is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 2 of the License, or (at your option)
+# Software Foundation, either version 3 of the License, or (at your option)
 # any later version.
 #
 # spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
@@ -29,7 +30,7 @@ __author__ = "Stuart Sears <stuart.sears@man.com>"
 import sys
 import os
 # for matching RPM package name strings
-# import re
+import re
 # for commandline parsing
 from optparse import OptionParser, OptionGroup
 # for pretty-printing debug output
@@ -38,11 +39,13 @@ from pprint import pprint
 from operator import itemgetter
 # extracting elements from RPM file names
 from rpmUtils.miscutils import splitFilename
+# for progress display:
+from progressbar import Counter,Percentage,ProgressBar,Timer,Bar
 
 # ---------------------------------------------------------------------------- #
 # Custom Python Modules
 import rhnapi
-from rhnapi import packages, errata
+from rhnapi import packages, errata, channel
 
 # ---------------------------------------------------------------------------- #
 # core script configuration
@@ -51,6 +54,11 @@ RHNCONFIG = '~/.rhninfo'
 # put these in your configfile, dammit
 RHNUSER = None
 RHNPASS = None
+
+# RE for RedHat Errata
+rhpatt = re.compile(r'^RH[ESB]A-\d{4}:\d{4}(?:-\d)?')
+# epoch removal for failed queries
+epochpatt = re.compile(r'AND epoch:\d+ ?')
 
 # ---------------------------------------------------------------------------- #
 
@@ -98,14 +106,26 @@ def parse_cmdline(argv):
     pkggrp.add_option("-r", "--release", help = "Package Release")
     pkggrp.add_option("-a", "--arch", help = "Package Arch")
     pkggrp.add_option("-q", "--query", help = "Raw lucene format query. Overrides the other options")
-    pkggrp.add_option("-f", "--filename", help = "figure out package names etc from a filename (the RPM package name)")
+    pkggrp.add_option("-f", "--filename", help = "figure out package names etc from a filename (the RPM package name). Can be a comma-separated list")
+    pkggrp.add_option("-i", "--input", 
+        help="""read packagenames from the provided file in E:N-V-R.A format (e.g. 2:postfix-2.3.3-2.3.el5_6.x86_64) 
+instead of specifying them on the commmandline. Overrides all the other selection options.""")
     parser.add_option_group(pkggrp)
+
+    errgrp = OptionGroup(parser, "Errata Selection")
+    errgrp.add_option("-R", "--redhat", action="store_true", default=False,
+        help="Prefer Red Hat errata to clones. Default is to prefer clones")
+    errgrp.add_option("-c", "--channel", help="Only process errata from the specified channel label")
+    parser.add_option_group(errgrp)
 
     if len(argv) == 0:
         parser.print_help()
         sys.exit(1)
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
+    # it would be nice to just say 'redhat = not custom', but they can BOTH be false at once
+    if opts.filename:
+        opts.filename = opts.filename.split(',')
 
     # finally...
     return opts, args
@@ -140,6 +160,26 @@ def reduce_list(seq):
     # a set is an unordered collection of unique entries
     s = set(seq)
     return list(s)
+
+
+# ---------------------------------------------------------------------------- #
+
+def add_or_update_key(adict, akey, aval, unique=True):
+    """
+    adds a new key with the appropriate value (as a set member)
+    OR
+    if the key already exists, adds the new value as a set member
+    """
+    if adict.has_key(akey):
+        if isinstance(aval, set):
+            adict[akey].update(aval)
+        else:
+            adict[akey].add(aval)
+    else:
+        if isinstance(aval, set):
+            adict[akey] = aval
+        else:
+            adict[akey] = set([aval])
         
 # ---------------------------------------------------------------------------- #
 if __name__ == '__main__':
@@ -166,13 +206,32 @@ if __name__ == '__main__':
         if opts.debug:
             RHN.enableDebug()
 
+        if opts.channel:
+            if not channel.getDetails(RHN, opts.channel):
+                RHN.logError("No such channel %s" % opts.channel)
+                sys.exit(5)
+        # so we can test for existence/content
+        filelist = set()
         # were we given a proper lucene query string?
         if opts.query:
-            querystr = opts.query
+            querylist = [ opts.query ]
         # if called with a filename argument, use that
         elif opts.filename:
-            querystr = filename_to_query(opts.filename)
-            print querystr
+            filelist = set(f for f in opts.filename if f.strip() != '')
+            querylist = set([ filename_to_query(f) for f in opts.filename ])
+
+        elif opts.input:
+            try:
+                filelist = set(f for f in open(opts.input).read().splitlines() if f.strip() != '' and not f.startswith('#'))
+                querylist = set([ filename_to_query(f) for f in filelist ])
+            except IOError, E:
+                print "%s : %s" %(E.strerror, E.filename)
+                sys.exit(2)
+            # any other exceptions get raised
+            except:
+                raise
+                sys.exit(3)
+
         # finally we parse the other nvrea args
         else:
             queryitems = []
@@ -185,83 +244,209 @@ if __name__ == '__main__':
             if opts.arch:
                 queryitems.append('arch:"%s"' % opts.arch)
             querystr = ' AND '.join(queryitems)
+            querylist = set([ querystr ])
 
-        if opts.verbose:
-            print "Querying with search string: %s" % querystr
-
-        # perform a lucene query using our query string:
+        # core pkgs list
+        pkgs = []
+        print "Processing %d queries" % len(querylist)
         
-        # list of matching packages
-        # we only really need the IDs though
-        pkgs = packages.search(RHN, querystr) 
+        # only if we have more than one query
+        progress = len(querylist) > 1
 
-        if not pkgs:
-            RHN.logErr("search with parameters %s failed" % querystr)
-            print "search with parameters %s failed" % querystr
-            sys.exit(2)
-        
-        # if the search worked, but returned nothing...
-        if pkgs and len(pkgs) == 0:
-            RHN.logErr("No packages seem to match the provided search parameters (%s)" % querystr)
-        else:
-            errlist = []
-            # for convenience:
-            pids = [ p.get('id') for p in pkgs ]
+        if progress:
+            widgets = [ 'Querying: [', Counter(), ']', Bar(), Timer() ]
+            pbar = ProgressBar(widgets=widgets, maxval=len(querylist), term_width=80).start()
 
-            for p in pids:
-                for err in packages.listProvidingErrata(RHN, p):
-                    errlist.append(err.get('advisory'))
+        for counter, query in enumerate(querylist):
 
-            # reduce the list to unique entries only:        
-            errlist = reduce_list(errlist)                    
+            if opts.verbose or opts.debug:
+                RHN.logDebug("Querying with search string: %s" % query)
 
-            # now we reduce the list of errata further, by stripping out
-            # RH advisories that have already been cloned.
-            # this assumes that cloned errata have the same ID as their source
-            # erratum, e.g. RHXX-2010:NNNN -> CLA-2010:NNNN
+            if len(query.strip()) == 0:
+                continue
 
-            # get a list of unique cloned errata advisories:
-            clones = reduce_list([ x for x in errlist if x.startswith('CLA') ])
-
-            # do the same for the RH** advisories:
-            rhids  = reduce_list([ x for x in errlist if x.startswith('RH') ])
-
-            # now run through the clones and compare them to the RH ids, removing
-            # all the RH errata that match something in the clone list:
-            for c in clones:
-                # split the clone ids:
-                ct, cn = c.split('-')
-                for r in rhids:
-                # split the rhids to compare advisory ID numbers
-                    rtype, rname = r.split('-')
-                    if cn == rname:
-                        rhids.remove(r)
+            # perform a lucene query using our query string:
             
-            # now recombine them (this would work in either order)
-            clones.extend(rhids)
-            # sort them by the advisory date so we get them in ascending order
-            clones.sort(key = lambda k: k.split('-')[1])
+            # list of matching packages
+            # we only really need the IDs though
+            if opts.channel:
+                matches = packages.searchChannel(RHN, query, opts.channel)
+            else:
+                matches = packages.search(RHN, query)
+            
+            if not matches:
+                if query.find('epoch') != -1:
+                    RHN.logErr("search with parameters %s failed, removing epoch" % query)
+                    newquery = epochpatt.sub('', query)
+                    RHN.logInfo("retrying with query %s" % newquery)
+                    if opts.channel:
+                        matches = packages.searchChannel(RHN, newquery, opts.channel)
+                    else:
+                        matches = packages.search(RHN, newquery)
+                    if matches:
+                        pkgs += matches
+                        if progress:
+                            pbar.update(counter + 1)
+                    else:
+                        RHN.logErr("Search still didn't work without the epoch, moving on")
+                        if progress:
+                            pbar.update(counter + 1)
+                        continue
+                else:
+                    RHN.logErr("search with parameters %s failed" % query)
+        #        print "search with parameters %s failed" % query
+                continue
+            elif matches and len(matches) == 0:
+               # if the search worked, but returned nothing...
+               # move onto the next search search if there is one.
+                RHN.logErr("No packages seem to match the provided search parameters (%s)" % query)
+                continue
+            else:
+                # Add our matching packages to the list
+                pkgs += matches
+            if progress:
+                pbar.update(counter +1)                
+        
+        print
 
-            if opts.verbose:
-                print "reduced errata list from %d to %d entries" %(len(errlist), len(clones))
-                print "Gathering information for output"
+        if len(pkgs) == 0:
+            RHN.logError("None of the provided search strings or filenames produced any results")
+            sys.exit(4)
+        else:
+            RHN.logInfo("Found %d packages" % len(pkgs))
+            # key => packagelists mapping
+            errmaps = {}
 
-            print "Errata providing matching packages"
-            print "Search Term: '%s'" % querystr
-            print "============================================================="
-            for adv in clones:
-                # extract the synopsis
-                descr = errata.getDetails(RHN, adv).get('synopsis')
-                # get the RPM filenames from the 'path' entry
-                payload = [ x['path'].split('/').pop() for x in errata.listPackages(RHN, adv)]
+            errlist = set()
+            # for packages we've seen already
+            seen = set()
+            # for convenience:
+            print "Finding errata for packages"
+            widgets = [ "Packages [", Counter(), "]", Bar(), Timer() ]
+            pbar = ProgressBar(widgets=widgets, maxval=len(pkgs), term_width=80).start()
+            for counter, p in enumerate(pkgs):
+                pname = "%(name)s-%(version)s-%(release)s.%(arch)s" % p
+                RHN.logDebug("Processing %s" % pname)
+                pid = p.get('id')
+                if pid in seen:
+                    RHN.logDebug("Package ID %d already provided by a known erratum, skipping" % pid)
+                    pbar.update(counter + 1)
+                    continue
+                else:
+                    seen.add(pid)
+                # which errata provide these packages?
+                perr = set( [e.get('advisory') for e in packages.listProvidingErrata(RHN, pid)] )
+                # if there aren't any, stop here and move on
+                RHN.logDebug("Found %d errata for package %s" %(len(perr), pname))
+                if len(perr) == 0:
+                    RHN.logWarn("No errata provide package %s" % pname)
+                    pbar.update(counter + 1)
+                    continue
+                elif len(perr) == 1:
+                    # if there is exactly one, add that
+                    errlist.update(perr)
+                    myerr = perr.pop()
+                    errpkgs = errata.listPackages(RHN,myerr)
+                    seen.update(p.get('id') for p in errpkgs)
+                    add_or_update_key(errmaps, myerr, set('%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errpkgs).intersection(filelist))
+                    pbar.update(counter + 1)
+                    continue
+                else:
+                    # we have more than one erratum.
+                    rherr = set(e for e in perr if rhpatt.match(e))
+                    # in general I'd expect a package to come from exactly one RH erratum
+                    # but possibly multiple clones. Unless we've had a much vaguer package spec than is
+                    # ideal.
+                    pidlist = set([])
+                    if opts.redhat:
+                        for e in rherr:
+                            if opts.channel:
+                                errpkgs = [ pk for pk in errata.listPackages(RHN, e) if opts.channel in pk.get('providing_channels') ]
+                            else:
+                                errpkgs = errata.listPackages(RHN, e)
+                            pidlist.update(p.get('id') for p in errpkgs)
+                            add_or_update_key(errmaps, e, set('%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errpkgs).intersection(filelist))
+                        seen.update(pidlist)
+                        errlist.update(rherr)
+                    else:
+                        perr.difference_update(rherr)
+                        for e in perr:
+                            if opts.channel:
+                                errpkgs = [ pk for pk in errata.listPackages(RHN, e) if opts.channel in pk.get('providing_channels') ]
+                            else:
+                                errpkgs = errata.listPackages(RHN, e)
+                            pidlist.update(p.get('id') for p in errpkgs)
+                            add_or_update_key(errmaps, e, set('%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errpkgs))
+                        seen.update(pidlist)
+                        errlist.update(perr)
+                    pbar.update(counter + 1)
+            print
+        # print errlist
+        # print errmaps
+        for k, v in errmaps.iteritems():
+            print "%s (%s)" %(k, errata.getDetails(RHN, k)['synopsis'])
+            if opts.channel:
+                print "[ %s ]" % opts.channel
+            print  ' ','\n  '.join(v)
+            
 
-                print "Advisory: %s" % adv
-                print "Synopsis: %s" % descr
-                print "RPM Packages:"
-                for p in payload:
-                    print "  %s" % p
-                print
-                print "---------------\n"
+        sys.exit(0)
+
+# 2013-11-22 COB
+#            for p in pids:
+#                for err in packages.listProvidingErrata(RHN, p):
+#                    errlist.append(err.get('advisory'))
+#
+#            # reduce the list to unique entries only:        
+#            errlist = reduce_list(errlist)                    
+#
+#            # now we reduce the list of errata further, by stripping out
+#            # RH advisories that have already been cloned.
+#            # this assumes that cloned errata have the same ID as their source
+#            # erratum, e.g. RHXX-2010:NNNN -> CLA-2010:NNNN
+#
+#            # get a list of unique cloned errata advisories:
+#            clones = reduce_list([ x for x in errlist if x.startswith('CLA') ])
+#
+#            # do the same for the RH** advisories:
+#            rhids  = reduce_list([ x for x in errlist if x.startswith('RH') ])
+#
+#            # now run through the clones and compare them to the RH ids, removing
+#            # all the RH errata that match something in the clone list:
+#            for c in clones:
+#                # split the clone ids:
+#                ct, cn = c.split('-')
+#                for r in rhids:
+#                # split the rhids to compare advisory ID numbers
+#                    rtype, rname = r.split('-')
+#                    if cn == rname:
+#                        rhids.remove(r)
+#            
+#            # now recombine them (this would work in either order)
+#            clones.extend(rhids)
+#            # sort them by the advisory date so we get them in ascending order
+#            clones.sort(key = lambda k: k.split('-')[1])
+#
+#            if opts.verbose:
+#                print "reduced errata list from %d to %d entries" %(len(errlist), len(clones))
+#                print "Gathering information for output"
+#
+#            print "Errata providing matching packages"
+#            print "Search Term: '%s'" % querystr
+#            print "============================================================="
+#            for adv in clones:
+#                # extract the synopsis
+#                descr = errata.getDetails(RHN, adv).get('synopsis')
+#                # get the RPM filenames from the 'path' entry
+#                payload = [ x['path'].split('/').pop() for x in errata.listPackages(RHN, adv)]
+#
+#                print "Advisory: %s" % adv
+#                print "Synopsis: %s" % descr
+#                print "RPM Packages:"
+#                for p in payload:
+#                    print "  %s" % p
+#                print
+#                print "---------------\n"
 
 
 
@@ -271,5 +456,4 @@ if __name__ == '__main__':
 
 
     
-    
-    
+# vim: set nofen : 
