@@ -4,13 +4,13 @@
 # RHN/Spacewalk XMLRPC API script
 # requires the python-rhnapi module
 #
-# Copyright 2012 Stuart Sears
+# Copyright (c) 2012 Stuart Sears
 #
 # This file is part of spw-api-scripts
 #
 # spw-api-scripts is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 2 of the License, or (at your option)
+# Software Foundation, either version 3 of the License, or (at your option)
 # any later version.
 #
 # spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
@@ -22,12 +22,12 @@
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
 """
-spw-channel-listpackages
-Lists versions of packages in a given channel
-Can accept shell glob patterns to specify packages
-and optionally only show the latest versions
+spw-channel-packageversions
+Lists versions of packages in a given channel on a satellite server
+Can accept shell glob patterns to specify packages and optionally only show 
+the latest versions and display providing errata, if any.
 """
-__author__ = "Your Name <email>"
+__author__ = "Stuart Sears <stuart.sears@man.com>"
 
 # --------------------- Python Standard Library Modules ---------------------- #
 import os
@@ -36,6 +36,7 @@ import re
 from optparse import OptionParser, OptionGroup
 from fnmatch import fnmatch
 from operator import itemgetter
+from rpmUtils.miscutils import splitFilename, compareEVR
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
@@ -143,7 +144,11 @@ def reduce_by_globs(globlist, packagelist, logger):
 
     for p in results:
         # for convenience printing later :)
-        p['nvrea'] = "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p
+        if p.get('epoch').strip() != '':
+            p['nvrea'] = "%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s" % p
+        else:
+            p['nvrea'] = "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p
+
 
     logger.info("Reduced packagelist to %d packages" % len(results))
 
@@ -160,15 +165,55 @@ def match_channels(rhnchannels, globlist):
     rhnchannels(list[dict]) - list of channel dicts from RHN API calls
     globlist(list[str])     - list of strings, channel labels or shell globs
     """
-    results = []
+    results = set()
 # in the curious situation where we have no channel labels provided. Unlikely.
     if len(globlist) == 0:
         return set([ x['label'] for x in rhnchannels])
     for g in globlist:
-        results.extend([ x['label'] for x in rhnchannels if fnmatch(x['label'], g)])
+        results.update( x['label'] for x in rhnchannels if fnmatch(x['label'], g) )
     # de-dupe using sets in case a channel was matched by more than one glob.
-    return set(results)
+    return sorted(list(results))
 
+# ---------------------------------------------------------------------------- #
+
+def rpmversioncmp(p1, p2):
+    """
+    comparison function for RPM dict objects, as returned by many API calls
+    sorts a list of RPMs (with the same  name!)
+    """
+    # return is numeric:
+    # -1 : evr1 < evr2
+    #  0 : evr1 = evr2
+    # +1 : evr1 > evr2
+    # print "P1", p1
+    # print "P2", p2
+
+    evr1 = ( p1.get('epoch'), p1.get('version'), p1.get('release') )
+    evr2 = ( p2.get('epoch'), p2.get('version'), p2.get('release') )
+
+    return compareEVR(evr1, evr2)
+
+
+
+# ---------------------------------------------------------------------------- #
+
+def groupby(dictlist, key):
+    """
+    groups a list of dict structures by a chosen key
+    returns dict of list/dict, indexed on key values.
+    """
+    # get a set of the possible values
+    idx = {}
+    for d in dictlist:
+        # d should be a dict
+        cur = d.get(key)
+        if idx.has_key(cur):
+            idx[cur].append(d)
+        else:
+            idx[cur] = [ d ]
+
+    return idx
+    
 # ---------------------------------------------------------------------------- #
 
 def print_results(pkglist, chanlabel, showerrata = False):
@@ -176,24 +221,28 @@ def print_results(pkglist, chanlabel, showerrata = False):
     Prints a pretty-formatted table of results
     """
     maxlen = utils.getMaxLen(pkglist)
-# to avoid messed-up formatting when there are no errata present, set defaults for
+    # now we group them
+    pkggroups = groupby(pkglist, 'name')
+    # to avoid messed-up formatting when there are no errata present, set defaults for
+    # field widths
     for k in [ 'advisory', 'rhadvisory' ]:
-        if maxlen.get(k, 14) < 14:
-            maxlen[k] = 14
+        if maxlen.get(k, 15) < 15:
+            maxlen[k] = 15
 
     print "Matching Packages in channel %s" % chanlabel
     if showerrata:
-        fmtstr = "%%(nvrea)-%(nvrea)ds %%(advisory)-%(advisory)ds %%(rhadvisory)-%(rhadvisory)ds" % maxlen
-        print fmtstr % {'nvrea' : 'Package NVRA', 'advisory' : 'Cloned Erratum', 'rhadvisory' : 'Red Hat Erratum' }
-        print fmtstr % {'nvrea' : '============', 'advisory' : '==============', 'rhadvisory' : '===============' }
+        fmtstr = "%%(nvrea)-%(nvrea)ds %%(rhadvisory)-%(rhadvisory)ds %%(advisory)-%(advisory)ds %%(synopsis)-%(synopsis)ds" % maxlen
+        print fmtstr % {'nvrea' : 'RPM Package', 'advisory' : 'Cloned Erratum', 'rhadvisory' : 'Red Hat Erratum', 'synopsis' : 'Synopsis'}
+        print fmtstr % {'nvrea' : '===========', 'advisory' : '==============', 'rhadvisory' : '===============', 'synopsis' : '========' }
     else:
         fmtstr = "%%(nvrea)-%(nvrea)ds" % maxlen
-        print fmtstr % {'nvrea' : 'Package NVRA' }
-        print fmtstr % {'nvrea' : '============' }
+        print fmtstr % {'nvrea' : 'RPM Package' }
+        print fmtstr % {'nvrea' : '===========' }
 
-    for p in pkglist:
-        print fmtstr % p
-    print "--"        
+    for pkgname, pkglist in pkggroups.iteritems():
+        for p in sorted(pkglist, cmp=rpmversioncmp):
+            print fmtstr % p
+        print "--"        
 
 
 # ---------------------------------------------------------------------------- #
@@ -247,14 +296,19 @@ def main():
                 RHN.logDebug("Processing Errata for matching packages")
                 channel_errata = [ x['advisory'] for x in channel.listErrata(RHN, chanlabel) ]
                 for p in matching_packages:
-                    advlist = [ x['advisory'] for x in packages.listProvidingErrata(RHN, p.get('id')) ]
-                    # if this is a cloned channel, there should only be one clone for any given RH Erratum
-                    advisory = [ a for a in advlist if a in channel_errata ] or ['None']
+                    # list of dict
+                    errlist =  packages.listProvidingErrata(RHN, p.get('id'))
+                    # list of string (advisory)
+                    advlist = [ e.get('advisory') for e in errlist ]
+                    # get cloned advisories matching this package.
+                    advisory = [ a for a in advlist if not rhpatt.match(a) ] or ['--']
                     # let's fetch the original erratum too, if it exists
-                    rhadvisory = [ a for a in advlist if rhpatt.match(a) ] or ['None']
+                    rhadvisory = [ a for a in advlist if rhpatt.match(a) ] or ['--']
+                    rhdesc = [ e.get('synopsis') for e in errlist if rhpatt.match(e.get('advisory'))] or [ '(not from errata)' ]
                     # this feels clunky, but works. There may be a better option
                     p['advisory'] = advisory[0]
                     p['rhadvisory'] = rhadvisory[0]
+                    p['synopsis'] = rhdesc[0]
             # print a channel summary                    
             print_results(matching_packages, chanlabel, opts.errata)
                 
@@ -276,4 +330,4 @@ if __name__ == '__main__':
 
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 nu ft=python:
+# vim: set et cindent ts=4 sts=4 sw=4 nu ft=python:

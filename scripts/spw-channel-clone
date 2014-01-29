@@ -465,4 +465,4 @@ if __name__ == '__main__':
     
 # footer - do not edit below this    
 # vim modeline    
-# vim: set ts=4 sts=4 sw=4 et ai smartindent ft=python nu:
+# vim: set ts=4 sts=4 sw=4 et cindent ft=python nu:

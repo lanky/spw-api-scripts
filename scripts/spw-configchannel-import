@@ -332,4 +332,4 @@ if __name__ == '__main__':
     main()
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 nu ft=python:
+# vim: set et cindent ts=4 sts=4 sw=4 nu ft=python:

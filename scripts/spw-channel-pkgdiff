@@ -1,0 +1,393 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright 2013 Stuart Sears / Man Group
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+scriptname = "spw-channel-pkgdiff"
+__doc__ = """
+%s
+Generates a diff of package names (NVREA) between 2 chosen channels.
+The diff comprises 
+1. packages that are in SOURCE but not in DEST
+2. Packages that have the same NAME.ARCH but are newer in SOURCE
+SOURCE and DEST do not have to be on the same satellite, but are assumed to be.
+""" % scriptname
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+from rpmUtils.miscutils import compareEVR, splitFilename
+from operator import itemgetter
+from pprint import pprint
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel, packages, errata
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# ---------------------------------------------------------------------------- #
+
+def arg_error(optparser, errormsg, exitcode=None):
+    """
+    react to argument/option parsing errors
+    """
+    if isinstance(errormsg, list):
+        print "\n".join(errormsg)
+    else:
+        print errormsg
+    optparser.print_help()
+    if exitcode is not None:
+        try:
+            sys.exit(int(exitcode))
+        except:
+            sys.exit(255)
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+
+    preamble = """Generate a package-name diff between two satellite channels, optionally on different satellites.
+Returns a list of missing packages (those not present (by name.arch) in the destination channel, plus those that
+exist on both but are newer in the source channel"""
+
+    usagestr = "%prog [RHNOPTS] [-S SOURCEHOST] [-l/--latest] [-o/--output] SOURCE DEST"
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    mygrp = OptionGroup(parser, "Channel and output selection options")
+    mygrp.add_option("-S", "--source-host", default=RHNHOST, help="Source satellite (if the source channel is on a different host.")
+    mygrp.add_option("-o", "--output", help="output file for package diff. Defaults to stdout")
+    mygrp.add_option("-l", "--latest", action="store_true", default=False,  help="Only process the latest packages in SOURCE")
+
+    parser.add_option_group(mygrp)
+
+
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    # --debug overrules --verbose
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
+    if len(args) != 2:
+        arg_error(parser, "Please provide both source and destination channel labels", 1)
+
+    # finally...
+    return opts, args
+
+# ---------------------------------------------------------------------------- #
+
+def get_pkglist(rhnsession, chanlabel, latest=True):
+    """
+    Gets a list of packages from an RHN satellite using the XMLRPC API and
+    converts it to a set of strings in epoch:name-version-release.arch format
+    for consumption by rpmUtils.miscutils.splitFilename
+
+    :param rhnsession: an authenticated rhnapi.rhnSession object
+    :param chanlabel: string, an RHN Satellite software channel label
+    :param latest: boolean, whether to only list the latest packages (True)
+    """
+
+    if latest:
+        pkglist = channel.listLatestPackages(rhnsession, chanlabel)
+    else:
+        pkglist = channel.listAllPackages(rhnsession, chanlabel)
+    result = set()
+    epochfmt = "%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s"
+    return set([ epochfmt % p for p in pkglist ])
+
+# ---------------------------------------------------------------------------- #
+
+def get_evr(nvrea):
+    """
+    Uses rpmUtils.miscutils.splitFilename to return the (epoch, version, release)
+    tuple needed by compareEVR
+    :param nvrea: A string representing an RPM package filename, in epoch:name-version-release.arch format
+    :returns: tuple, (epoch, version, release)
+    """
+
+    n,v,r,e,a = splitFilename(nvrea)
+    return (e,v,r)
+
+# ---------------------------------------------------------------------------- #
+
+def index_pkgs(pkglist):
+
+    """Generates a dict of package strings for comparison, indexed on name.arch
+
+    :param pkglist: A list(or set) of e:nvr.a format package names (strings)
+    :returns: dict
+    """
+    idx = {}
+    for pkg in pkglist:
+        n,v,r,e,a = splitFilename(pkg)
+        pkgkey = "%s.%s" %(n,a)
+        current = idx.get(pkgkey, [])
+        if pkg in current:
+            continue
+        else:
+            current.append(pkg)
+        # finally update the list of matching strings
+        idx[pkgkey] = current
+
+    return idx
+
+# ---------------------------------------------------------------------------- #
+
+def is_newer_pkg(srcpkg, dstpkg):
+    """
+    Checks if 'srcpkg' is newer than 'dstpkg' using rpm version comparison
+
+    :param srcpkg: string, an e:n-v-r.a packagename
+    :param dstpkg: string, an e:n-v-r.a packagename
+
+    :returns: bool
+    """
+    return compareEVR(get_evr(srcpkg), get_evr(dstpkg)) == 1
+
+        
+# ---------------------------------------------------------------------------- #
+
+def errata_for_pkgs(rhnsession, pkgset):
+    """
+    Finds Errata for the packages provided, using the XMLRPC API
+
+    :param rhnsession: authenticated rhnapi.rhnSession object
+    :param pkgset: A set of package names (e:nvr.a format)
+    """
+    rhnsession.logInfo("Finding errata for missing/updated packages")
+    # somewhere to keep track of packages we've already seen
+    # we'll chuck this away when done
+    seen = set()
+    # a set to use to store advisory names, this will be returned
+    errset = set()
+    # a set for packages that have no errata
+    unmatched = set()
+    # packages we couldn't find
+    failures = set()
+
+    for pkg in pkgset:
+        # if we've already seen this package, move on
+        if pkg in seen:
+            rhnsession.logDebug("already seen %s" % pkg)
+            continue
+        n,v,r,e,a = splitFilename(pkg)
+        pkgobj = packages.findByNvrea(rhnsession,n,v,r,a,e)
+        if pkgobj:
+            # there really should only be one of these
+            # but let's handle any other circumstances
+            if len(pkgobj) == 0:
+                rhnsession.logError("Unable to find package %s on dest satellite" % pkg)
+                failures.add(pkg)
+            elif len(pkgobj) > 1:
+                rhnsession.logError("Error finding %s, multiple matches found" % pkg)
+            else:
+                # we now need to find an appropriate erratum
+                # to avoid clutter, we should used cloned errata where feasible,
+                # which will avoid duplicate clones
+                mypkg = pkgobj[0]
+                rhnsession.logInfo("Found package ID %(id)d" % mypkg)
+                # get a list of errata that provide our chosen package ID
+                errlist = packages.listProvidingErrata(rhnsession, mypkg.get('id'))
+                if errlist:
+                    # sort it so cloned advisories come first if there are any
+                    errlist.sort(key=itemgetter('advisory'))
+                    # pick the first one.
+                    myerr = errlist[0]
+                    rhnsession.logInfo("Found erratum %s for %s" % (myerr.get('advisory'), pkg))
+                    # add our erratum to the errata list
+                    errset.add(myerr.get('advisory'))
+                    # add all its other packages to our 'seen' list to avoid searching for them again
+                    errpkgs = set([ '%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errata.listPackages(rhnsession,myerr.get('advisory'))])
+                    seen.update(errpkgs)
+                else:
+                    # we haven't found our packge on the satellite
+                    rhnsession.logInfo("Found no errata providing package %s" % pkg)
+                    unmatched.add(pkg)
+        else:
+            rhnsession.logError("unable to find package %s on destination satellite" % pkg)
+            failures.add(pkg)
+
+    # remove all the packages that came from errata
+    # pkgset.difference_update(seen)
+    # remove packages that we couldn't find?
+    # errata, existing, non-existing    
+    return { 'Errata': errset, 'Packages not from errata' : unmatched, 'Packages not found' : failures }
+
+
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, args = parse_cmdline(argv[1:])
+    srcchan, dstchan = args
+
+    try:
+        dstrhn = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = scriptname, loglevel=opts.loglevel,
+                                )
+        if opts.source_host:
+        # are we connecting to a different satellite for our source packages?
+            srcrhn = rhnapi.rhnSession(opts.source_host, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = scriptname, loglevel=opts.loglevel,
+                                )
+        else:
+            srcrhn = rhnclient
+
+        # collect channel package lists
+        dstrhn.logDebug("Getting package list for %s" % srcchan)
+        srcpkgs = get_pkglist(srcrhn, srcchan, opts.latest)
+        # we only ever want the latest packages from our destination channel
+        dstrhn.logDebug("Getting latest packages for %s" % dstchan)
+        dstpkgs = get_pkglist(dstrhn, dstchan, True)
+
+        # now let's remove all packages from srcpkgs if they're already in our destination channel
+        srcpkgs.difference_update(dstpkgs)
+
+        # now let's get indexing!
+        srcindex = index_pkgs(srcpkgs)
+        dstindex = index_pkgs(dstpkgs)
+
+        missing = set()
+        updates = set()
+
+        for id, pkglist in srcindex.iteritems():
+            dstrhn.logInfo("processing %s" % id)
+            dstrhn.logInfo("%d packages matching %s to consider" % (len(pkglist), id))
+            dstpkgs = dstindex.get(id, [])
+            if len(dstpkgs) == 0:
+                dstrhn.logInfo("No matching packages in destination channel, adding to missing list")
+                missing.update(set(pkglist))
+            else:
+                dstpkg = dstpkgs.pop()
+                for pkg in pkglist:
+                    if is_newer_pkg(pkg, dstpkg):
+                        dstrhn.logDebug("%s is newer than %s, adding it" %(pkg, dstpkg))
+                        updates.add(pkg)
+                    else:
+                        dstrhn.logDebug("%s is older than or identical to %s, skipping it" %(pkg, dstpkg))
+        
+        dstrhn.logInfo("%d packages missing from %s" %(len(missing), srcchan))                        
+        dstrhn.logInfo("%d packages updates for %s" %(len(updates), srcchan))                        
+        # process missing and updated packages       
+ 
+        dstrhn.logInfo("Searching for errata for %d missing packages" % len(missing))
+        missing_errata = errata_for_pkgs(dstrhn, missing)
+        dstrhn.logInfo("Searching for errata for %d package updates" % len(updates))
+        update_errata = errata_for_pkgs(dstrhn, updates)
+
+
+        # pprint (missing_errata)
+        # pprint (update_errata)
+        # generate a list of lines we can dump to a file, or sys.stdout.
+        outlines = ["Missing Packages\n", "----------------\n"]
+        for key, val in missing_errata.iteritems():
+            outlines.append("** %s **\n" % key)
+            if len(val) == 0:
+                outlines.append("None\n")
+            else:
+                for entry in val:
+                    outlines.append("%s\n" % entry)
+        outlines.extend(["Updated Packages\n", "----------------\n"])
+        for key, val in update_errata.iteritems():
+            outlines.append("** %s **\n" % key)
+            if len(val) == 0:
+                outlines.append("None\n")
+            else:
+                for entry in val:
+                    outlines.append("%s\n" % entry)
+        # pprint(outlines)
+        # sys.exit(0)
+
+
+
+
+# can be abstracted to a gen_report/output type func
+        if opts.output:
+            try:
+                fd = open(os.path.abspath(opts.output), 'wb')
+                fd.writelines(outlines)
+                fd.close()
+            except:
+                raise
+                print "unable to access %s for writing. Check permissions?" % opts.output
+        else:
+            sys.stdout.writelines(outlines)
+
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:

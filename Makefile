@@ -6,9 +6,11 @@
 
 
 # generate source and binary RPMs
-rpms:
-	git log --format="%cd (%h) %s - %an" --date=short > ChangeLog
+rpms: changelog
 	python setup.py bdist_rpm 
+
+changelog:
+	git log --format="%ci [%h] - %an <%aE>%n%s%n%b" --date=short --no-merges > ChangeLog
 
 # generate tarball
 tarball:

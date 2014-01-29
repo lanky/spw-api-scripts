@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 # RHN/Spacewalk API script
 #
-# Copyright 2009-2012 Stuart Sears
+# requires the python-rhnapi module
+#
+# Copyright (c) 2009-2012 Stuart Sears
 #
 # This file is part of spw-api-scripts
 #
 # spw-api-scripts is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 2 of the License, or (at your option)
+# Software Foundation, either version 3 of the License, or (at your option)
 # any later version.
 #
 # spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
@@ -24,7 +26,6 @@
 #
 # ------------------------------- end licence -------------------------------- #
 #
-# This script requires the python-rhnapi module
 
 
 __doc__ = """
@@ -55,7 +56,7 @@ Can read channel mappings from a JSON-format config file like this:
 UPDATE:
     also reads YAML now, in this format
 rhel5-group:
-  base: clone-rhel-x86_64-server-5
+  label: clone-rhel-x86_64-server-5
   source: rhel-x86_64-server-5
   children:
     - label: clone-rhel-x86_64-server-productivity-5
@@ -73,6 +74,7 @@ import time
 import csv
 from optparse import OptionParser, OptionGroup
 
+
 try:
     import yaml
     yamlsupport = True
@@ -88,6 +90,7 @@ import rhnapi
 from rhnapi import channel
 from rhnapi import errata
 from rhnapi import utils
+from progressbar import ProgressBar, Bar, Counter, Timer, Percentage
 
 # ------------------------- configuration variables. ------------------------- #
 # the defaults are probably okay, actually.
@@ -98,7 +101,13 @@ RHNHOST = 'localhost'
 RHNUSER = None
 RHNPASS = None
 
-CHANNELMAPS = [ os.path.expanduser('~/.rhn-channels.conf'), '/etc/sysconfig/rhn-channels.conf' ]
+# defaults for channel mapping/grouping files.
+CHANNELMAPS = [ 
+                os.path.expanduser('~/.rhn-channels.yaml'), 
+                '/etc/sysconfig/rhn-channels.yaml',
+                os.path.expanduser('~/.rhn-channels.conf'), 
+                '/etc/sysconfig/rhn-channels.conf',
+              ]
 
 ERRLEVELS = [ 'Critical', 'Important', 'Moderate', 'Low' ]
 
@@ -114,6 +123,22 @@ def parse_cmdline(argv):
     """
     process the commandline :)
     """
+    def error(errlines, usage=True, exitcode=1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        if isinstance(errlines, list):
+            print "\n".join(errlines)
+        else:
+            print errlines
+        print
+        if usage:
+            parser.print_help()
+        sys.exit(exitcode)
+
     preamble = "Generate a CSV list of unsynced errata for a given channel since the given date"
     usagestr = "%prog [RHNOPTS]"
     # initialise our parser and set some default options
@@ -124,6 +149,8 @@ def parse_cmdline(argv):
         help = "increase verbosity. Sets loglevel to INFO")
 #    parser.add_option("-q", "--quiet", action = "store_true", default = False,
 #        help = "Disable all logging and output")
+    parser.add_option("-P", "--progress", action="store_true", default=False,
+        help="Show a text progressbar for long-running operations")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
@@ -153,12 +180,14 @@ def parse_cmdline(argv):
 
     errgrp = OptionGroup(parser, "Errata selection options")
     errgrp.add_option("-d", "--date", help = "Only summarise errata released after this date")
+    errgrp.add_option("-e", "--end", help = "Only summarise errata released before this date")
     errgrp.add_option("--latest", action="store_true", default=False,
         help = "Only include the latest errata (based on synopsis and issue date)")
     errgrp.add_option("-t", "--type", default="security,bug,feature",
         help = "Errata types to show. 'security','bug','feature'. Can be a comma-separated list. No spaces")
     errgrp.add_option("-p", "--priority",
-        help="importance of errata to include. Comma-separated list, no spaces. Choose from 'critical','important','moderate', and 'low'. All levels are displayed by default")
+        help="""importance of errata to include. Comma-separated list, no spaces. Choose from 'critical',
+'important','moderate', and 'low'. All levels are displayed by default""")
     parser.add_option_group(errgrp)
 
     if len(argv) == 0:
@@ -166,8 +195,8 @@ def parse_cmdline(argv):
         sys.exit(0)
 
     opts, args = parser.parse_args(argv)
+
     # check the args for errors etc...
-    # convert to a list for use with SafeConfigParser
     if opts.channel_mapping is not None:
         opts.channel_mapping = [ opts.channel_mapping ]
     else:
@@ -187,26 +216,31 @@ def parse_cmdline(argv):
 
     # if asked for a list of channel groups, no other args are required
     if opts.list:
-        return opts, args
+        if not any(map(os.path.isfile, opts.channel_mapping)):
+            error([ "ERROR: None of the specified or default config files exist",
+                    "\n".join(opts.channel_mapping)], False, 3)
+        else:
+            return opts, args
     if not opts.group:
         if opts.info:
-            print "The -i/--info option requires a group name (using -g/--group)"
-            parser.print_help()
-            sys.exit(2)
+            error( "ERROR: The -i/--info option requires a group name (using -g/--group)", 2)
+
         if not opts.channel:
-            print "You must provide a channel to summarise"
-            parser.print_help()
-            sys.exit(2)
+            error("ERROR: You must provide a channel to summarise", 2)
 
         if not opts.source:
-            print "Which channel was %s cloned from?" % opts.channel
-            parser.print_help()
-            sys.exit(2)
-                
+            error( "ERROR: Which channel was %s cloned from?" % opts.channel, 2)
 
     if not opts.output:
         print "no output file provided, using stdout"
         opts.output = sys.stdout
+
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
 
     # finally...
     return opts, args
@@ -236,15 +270,15 @@ def write_csv(data, filename, logger):
         mywriter = utils.csvReport(data, filename, fields = fields)
         logger.info("wrote %d lines to %s" %(len(data), str(filename)))
         return mywriter
-        
+
     except Exception, E:
         logger.warn("An Exception Occurred: %s" % E.__str__())
         logger.critical("ERROR: could not write to file %s" % filename)
         return False
-        
+
 # ---------------------------------------------------------------------------- #
 
-def diff_errata(rhn, chanobj, date, newest=False):
+def diff_errata(rhn, chanobj, date, end='', newest=False):
     """
     returns a dict of errata since the given date that have not been
     cloned from source to dest channels
@@ -262,7 +296,7 @@ def diff_errata(rhn, chanobj, date, newest=False):
     chanerrata = channel.listErrata(rhn, chanlabel)
     # for splitting out repeated errata
     chankeys = [ x['advisory'].split('-')[1] for x in chanerrata ]
-    srcerrata = channel.listErrata(rhn, chansource, start_date = date)
+    srcerrata = channel.listErrata(rhn, chansource, start_date = date, end_date = end)
     for e in srcerrata:
         # this avoids clones of existing errata being included
         if e['advisory'].split('-')[1] not in chankeys:
@@ -375,7 +409,6 @@ def reduce_errata(errlist, logger, priolist=[], typelist=[]):
         # if we're still here...
         if not delete:
             res.append(e)
-
     if len(res) < len(errlist):
         print "Removed %d errata by type/priority selection. List now contains %d errata" %(len(errlist),len(res))
         logger.info("Type and priority selection reduced list from %d to %d errata" %(len(errlist),len(res)))
@@ -393,7 +426,7 @@ def dump_group(channelmap, groupname, formatstr):
         print "Group : '%s'" % groupname
         print formatstr % {'label' : 'Channel Label', 'source' : 'Cloned From'}
         print formatstr % {'label' : '-------------', 'source' : '-----------'}
-        print formatstr % data.get('base')
+        print formatstr % data
         for c in data.get('children', []):
             print formatstr % c
         print
@@ -404,25 +437,23 @@ def dump_group(channelmap, groupname, formatstr):
 def dump_mappings(channelmaps, groupname=None):
     """
     Dump the list of channel mappings and groups to stdout
-
     parameters:
     channelmaps(dict)       - channel mapping dictionary (probably loaded from
                               JSON)
     """
     # utils.getMaxLen requires a list of dict, so:
-    allvals = channelmaps.values() 
+    allvals = channelmaps.values()
     for d in channelmaps.values():
         allvals.extend(d['children'])
     maxlen = utils.getMaxLen(allvals)
-    
     fmtstr = "%%(label)-%(label)ds %%(source)-%(source)ds" % maxlen
     if groupname is not None:
         if not channelmaps.has_key(groupname):
             print "No config found for group %s" % groupname
             return False
-        else:            
+        else:
             dump_group(channelmaps, groupname, fmtstr)
-    else:        
+    else:
         for group in sorted(channelmaps):
             dump_group(channelmaps, group, fmtstr)
 
@@ -454,52 +485,59 @@ def main():
 
     # process command line options and arguments
     opts, args = parse_cmdline(sys.argv[1:])
-    if opts.debug:
-        rhnloglevel = 10
-    elif opts.verbose:
-        rhnloglevel = 20
-    else:
-        rhnloglevel = 30
 
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
-                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
-                                logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+        RHN = rhnapi.rhnSession(opts.server, 
+                                opts.login, 
+                                opts.password,
+                                config=opts.config, 
+                                savecreds=opts.cache, 
+                                debug=opts.debug,
+                                logfile = opts.logfile, 
+                                logenable = True,
+                                logname = os.path.basename(sys.argv[0]), 
+                                loglevel=opts.loglevel,
                                 )
-        # did we give the --verbose switch?
-        if opts.verbose:
-            RHN.enableVerbose()
-
-        # debug dials up the logging some more
-        if opts.debug:
-            RHN.enableDebug()
 
         if opts.group:
             RHN.logInfo("processing group %s" % opts.group)
-        # collect errata from cloned channel
+
         if opts.date:
             monthstart = "%s 00:00:00" % opts.date
             RHN.logInfo("Using date provided on commandline (%s)" % monthstart)
-        else:            
+        else:
             monthstart = "%s-01 00:00:00" % time.strftime("%Y-%m")
             RHN.logInfo("No date provided, defaulting to the beginning of this month (%s)" % monthstart)
 
+        if opts.end:
+            enddate = "%s 00:00:00" % opts.end
+            RHN.logInfo("Using end date provided on commandline (%s)" % enddate)
+        else:
+            enddate = "%s 00:00:00" % time.strftime("%Y-%m-%d")
+            RHN.logInfo("No end date provided, using %s " % enddate)
+
         # Default value for sanity
         channelmaps = None
-        channelinfo = None
+        groupinfo = None
 
         # find the appropriate channel mapping file
         # process each listed file until one works
         for c in opts.channel_mapping:
-            RHN.logInfo("reading %s" % c)
-            if yamlsupport and c.endswith('.yaml'):
-                RHN.logInfo("processing %s" % c)
-                channelmaps = loadYAML(c, RHN.logger)
+            if os.path.isfile(c):
+                RHN.logInfo("reading %s" % c)
+                if yamlsupport and c.endswith('.yaml'):
+                    RHN.logInfo("processing %s" % c)
+                    channelmaps = loadYAML(c, RHN.logger)
+                else:
+                    channelmaps = utils.loadJSON(c)
+
+                if channelmaps is not None:
+                    # we've found something!
+                    break
             else:
-                channelmaps = utils.loadJSON(c)
-            if channelmaps is not None:
-                break
+                RHN.logDebug("file %s does not exist, ignoring")
+
+        # now process our channel maps
 
         if channelmaps is not None:
         # we've successfully parsed the channel mapping file
@@ -512,57 +550,67 @@ def main():
                 if opts.info:
                     dump_mappings(channelmaps, opts.group)
                     sys.exit(0)
-                channelinfo = channelmaps.get(opts.group, None)                    
+                groupinfo= channelmaps.get(opts.group, None)
 
         else:
             # if not, use the command-line options provided
-            channelinfo = {
-                            'label'     : opts.channel,
-                            'source'   : opts.source,
-                            'children' : [] 
-                          }
-
-        if channelinfo is None:
             if opts.channel and opts.source:
-                channelinfo = {
-                                'base' : {
-                                    'label'     : opts.channel,
-                                    'source'   : opts.source,
-                                },
-                                'children' : [] 
+                groupinfo = {
+                                'label'    : opts.channel,
+                                'source'   : opts.source,
+                                'children' : []
                               }
             else:
-                RHN.logError("Insufficient information provided. Without a group mapping, both channel and source labels are required")
+                RHN.logError("No channel mappings available and source and destination channels not provided. Aborting")
+                sys.exit(3)
+
+        # this is only about a single channel structure
+        if groupinfo is None:
+            if opts.channel and opts.source:
+                groupinfo = { 'label'    : opts.channel,
+                              'source'   : opts.source,
+                              'children' : []
+                            }
+            else:
+                RHN.logError("""Insufficient information provided. Without a group mapping,
+both channel and source labels are required""")
                 sys.exit(2)
 
         # otherwise, process the groups selected
         # now process our channels and their sources:
         # diff_errata(rhn, chanlabel, source, date)
-        basechan = channelinfo.get('base')
-        if basechan is not None:
-            RHN.logInfo("processing Base Channel %(label)s" % basechan)
-            results = diff_errata(RHN, basechan, monthstart, opts.latest)
+        if groupinfo is not None:
+            RHN.logInfo("processing Base Channel %(label)s" % groupinfo)
+            results = diff_errata(RHN, groupinfo, monthstart, enddate, opts.latest)
         else:
             results = []
-        
+
         # process each child channel in turn
-        for childchan in channelinfo.get('children', []):
+        for childchan in groupinfo.get('children', []):
             RHN.logInfo("processing child channel %(label)s" % childchan)
-            kerr = diff_errata(RHN, childchan, monthstart, opts.latest)
+            kerr = diff_errata(RHN, childchan, monthstart, enddate, opts.latest)
             if len(kerr) > 0:
                 results.extend(kerr)
-        
+
         # reduce errata according to preferences
         reduced_errata = reduce_errata(results, RHN.logger, opts.priorities, opts.errtypes)
 
         # fetch details for all our errata
-        for err in reduced_errata:
+        if opts.progress:
+            widgets = [ 'Processing: ', Counter(), ' errata [ ', Percentage(), ' ]', Bar(), '(', Timer(), ')' ]
+            pbar = ProgressBar(widgets=widgets, maxval=len(reduced_errata)).start()
+
+        for idx, err in enumerate(reduced_errata):
             errdata = errata.getDetails(RHN, err['advisory'])
+            if opts.progress:
+                pbar.update(idx + 1)
         # this is in a stupid hardcoded US format...
             del errdata['issue_date']
             err.update(errdata)
             if opts.debug:
                 RHN.logDebug("%(advisory)s - %(advisory_type)s - %(synopsis)s" % err)
+
+        print
 
         # now we need to write a CSV file, use cvs.DictWriter, it'll be easier :)
         if opts.group:
@@ -572,14 +620,14 @@ def main():
                 RHN.logInfo("CSV output successful")
         else:
             RHN.logInfo("No Errata to synchronise")
-       
+
 
 
 
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
         sys.exit(1)
-        
+
 # --------------------------------------------------------------------------------- #
 
 if __name__ == '__main__':
@@ -587,4 +635,4 @@ if __name__ == '__main__':
     main()
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python nofen:
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python nofen:

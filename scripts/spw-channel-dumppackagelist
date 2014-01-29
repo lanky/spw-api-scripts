@@ -167,7 +167,7 @@ def main():
                 for pkg in packageobjs:
                     # RHN.logDebug("processing package ID %(id)d - %(name)s-%(version)s-%(release)s.%(arch_label)s" % pkg)
                     if pkg['epoch'].strip() != '':
-                        pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s:%(epoch)s\n" % pkg
+                        pkgstr = "%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s\n" % pkg
                     else:
                         pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s\n" % pkg
                     RHN.logDebug("processed %s" % pkgstr.strip())
@@ -194,4 +194,4 @@ if __name__ == '__main__':
 
 
 # footer - do not edit below here
-# vim: set et ai smartindent ts=4 sts=4 sw=4 ft=python:
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:
