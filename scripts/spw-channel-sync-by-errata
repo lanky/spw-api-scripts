@@ -27,6 +27,7 @@
 import os
 import sys
 import time
+import re
 from optparse import OptionParser, OptionGroup
 
 # -------------------------- Custom Python Modules --------------------------- #
@@ -56,6 +57,8 @@ RHNPASS = None
 # --------------------------- Script Configuration --------------------------- #
 # put global variables for the script in here
 
+rhpatt = re.compile('^RH[BES]A-\d{4}:\d{4}(?:-\d)?')
+
 # ---------------------------------------------------------------------------- #
 
 def parse_cmdline(argv):
@@ -63,7 +66,7 @@ def parse_cmdline(argv):
     process and check commandline options and arguments.
     Called against sys.argv[1:] to ignore the script name itself.
     """
-    def error(errlines, exitcode = 1):
+    def error(errlines, usage=True, exitcode=1):
         """
         parser-specific error handling
         params:
@@ -74,9 +77,9 @@ def parse_cmdline(argv):
         parser.print_help()
         sys.exit(exitcode)
 
-    preamble = """A short desrciption of what the script does. Will appear in --help output."""
+    preamble = """Update one channel from another, using errata where possible"""
 
-    usagestr = "%prog [RHNOPTS]"
+    usagestr = "%prog [RHNOPTS] -s SOURCE DEST  [--test|--report]"
     
     # initialise our parser and set some default options
     parser = OptionParser(usage = usagestr, description = preamble)
@@ -99,39 +102,95 @@ def parse_cmdline(argv):
 
     changrp = OptionGroup(parser, "Channel Selection options")
     changrp.add_option("-s", "--source",
-            help="Source Channel for package and errata updates")
-    changrp.add_option("-d", "--dest",
-            help="Destination Channel for package and errata updates")
-    changrp.add_option("--test", action="store_true", default=False,
+            help="Source Channel for package and errata updates (calculated if missing)")
+    changrp.add_option("--test", "--report", dest="test", action="store_true", default=False,
             help="Calculate diff and report without making changes")
+    changrp.add_option("-o", "--output", help="output file for saving a generated report. Without this it is printed to stdout")
     parser.add_option_group(changrp)
 
 
     # by default
     if len(argv) == 0:
-        parser.print_help()
-        sys.exit(0)
+        error(["No options or arguments provided"], True, 0)
 
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
-    if not (opts.source or opts.dest):
-        error(["Error: both --source and --dest are required"], 1)
 
+    if len(args) != 1:
+        error(["ERROR: you must provide a channel to update/synchronise"], True, 1)
+
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
     # finally...
     return opts, args
-        
+
 # ---------------------------------------------------------------------------- #
+
+def errata_report(errdict, errtypes=[]):
+    """
+    Generates a report summarising errata that would be synchronised
+
+    :param errdict: 
+    dict of errata 'dict' objects, indexed on 'advisory'
+
+    :returns list:
+    a list of lines that could be printed or written to an output file
+    """
+    reportlines = []
+    if len(errdict.keys()) > 0:
+        errlen = max(len(e) for e in errdict.keys())
+        errfmt = "%%-%ds %%s" % errlen
+        reportlines = [
+            errfmt %("Erratum", "Synopsis"),
+            errfmt %("=" * errlen, "========"),
+        ]
+        for err in sorted(errdict.keys(), key=lambda k: k.split('-')[1], reverse=True):
+            errsyn = errdict[err].get('synopsis').strip()
+            reportlines.append(errfmt % (err, errsyn))
+
+    return reportlines
+
+# ---------------------------------------------------------------------------- #
+
+def package_report(rhn, pkgdict):
+    """
+    Generates a report summarising packages to synchronise.
+    Normally this would be packages that are not provided by an erratum
+    :param pkgdict:
+    dict of dict, keys are NVRA strings
+
+    :returns list:
+    a list of lines that can be printed or written to a file descriptor
+    """
+    reportlines = []
+    if len(pkgdict) > 0:
+        pkglen = max(len(x) for x in pkgdict) 
+        pkgfmt= "%%-%ds %%s" % pkglen
+        reportlines = [
+            pkgfmt %("Package", "Summary"),
+            pkgfmt % ("=" * pkglen, "======"),
+        ]
+        for p in pkgdict:
+            pkgobj = pkgdict.get(p)
+            pkgdet = packages.getDetails(rhn, pkgobj.get('id'))
+            reportlines.append(pkgfmt % (p, pkgdet.get('summary').strip()))
+            
+    return reportlines
+
+
+
 
 
 def main(argv):    
+    """
+    This is overcomplicated and should be broken down, really
+    """
     opts, args = parse_cmdline(argv[1:])
-
-    if opts.debug:
-        rhnloglevel = 10
-    elif opts.verbose:
-        rhnloglevel = 20
-    else:
-        rhnloglevel = 30
+    destchannel = args[0]
 
     try:
         RHN = rhnapi.rhnSession(opts.server,
@@ -143,20 +202,28 @@ def main(argv):
                                 logfile=opts.logfile,
                                 logenable=True,
                                 logname=os.path.basename(argv[0]),
-                                loglevel=rhnloglevel,
+                                loglevel=opts.loglevel,
                                 )
-        # DO STUFF with your RHN session and commandline options
-        
-# tasks
-# 1. get package lists from source and dest channels
-# 2. remove all packages already in destination channel
-# 3. Find all the packages provided by errata
-# 4. sync those        
         
         # list packages in source channel - we are specifically interested in
         # the latest versions only.
+        destdata = channel.getDetails(RHN, destchannel)
+        if not destdata:
+            RHN.logError("Channel %s does not appear to exist" % destchannel)
+            sys.exit(2)
+        dstpkgs = channel.listLatestPackages(RHN, destchannel)
+
+        if not opts.source:
+            # use the clone original
+            opts.source = destdata.get('clone_original')
+            if len(opts.source.strip()) == 0:
+                RHN.logError("No source channel provided and the destination has no 'original' source")
+                sys.exit(2)
+            else:
+                RHN.logInfo("Using original channel %s (the clone source of %s) as source" %(
+                    opts.source, destchannel))
+
         srcpkgs = channel.listLatestPackages(RHN, opts.source)
-        dstpkgs = channel.listLatestPackages(RHN, opts.dest)
 
         # extract names for diffing purposes
         srcindex = dict(zip([ "%(name)s-%(version)s-%(release)s.%(arch_label)s" % p for p in srcpkgs ], srcpkgs))
@@ -164,18 +231,23 @@ def main(argv):
         srcerrata = [ e.get('advisory') for e in channel.listErrata(RHN, opts.source) ]
 
         RHN.logDebug("%d packages in source channel %s" %(len(srcindex),opts.source))
-        RHN.logDebug("%d packages in destination channel %s" %(len(srcindex),opts.dest))
+        RHN.logDebug("%d packages in destination channel %s" %(len(srcindex),destchannel))
         pkgdiff = set(srcindex.keys())
         pkgdiff.difference_update(dstindex.keys())
-        RHN.logDebug("%d packages in %s but not in %s" %(len(pkgdiff), opts.source,opts.dest))
+        RHN.logDebug("%d packages in %s but not in %s" %(len(pkgdiff), opts.source,destchannel))
 
         if len(pkgdiff) > 0:
+            # sets for advisory and package names
             errlist = set([])
             nonerrpkgs = set([])
+            # a dict containing non-errata packages to sync, indexed on NVRA
+            pkgmaps = {}
+            # a dict containing sync errata, indexed on advisory
+            errmaps = {}
             count = 0
             widgets = ['progress: ', Counter(), '/ %d Packages [' % len(pkgdiff), Percentage(), ']', Bar(), '(', Timer(), ')']
             pbar = ProgressBar(widgets=widgets, maxval=len(pkgdiff), term_width=80).start()
-
+            # process all packages and find the errata providing them, if there are any
             for pkg in pkgdiff:
                 count += 1
                 pkgobj = srcindex.get(pkg)
@@ -183,41 +255,113 @@ def main(argv):
                 if len(erratalist) == 0:
                     RHN.logDebug("Package %s does not appear to come from an erratum" % pkg)
                     nonerrpkgs.add(pkg)
+                    pkgmaps[pkg] = pkgobj
                 else:
                     for e in erratalist:
-                        if e['advisory'] in srcerrata:
-                            RHN.logDebug("Adding %(advisory)s to sync list" % e)
-                            errlist.add(e['advisory'])
+                        adv = e.get('advisory')
+                        if adv in srcerrata:
+                            RHN.logDebug("Adding %s to sync list" % adv)
+                            errlist.add(adv)
+                            errmaps[adv] = e
                         else:
                             RHN.logDebug("Cannot find Erratum %(advisory)s in source channel, ignoring" % e)
                 pbar.update(count)
             print
-            print "Found %d Errata to Sync" % len(errlist)
-            print "Found %d packages not provided by errata" % len(nonerrpkgs)
-            print "\n".join(nonerrpkgs)
-            tstamp = time.strftime('%Y%m%d_%H%M%S')
-            outfile = '/tmp/%s-sync-data-%s.txt' % (opts.dest, tstamp)
-            try:
-                fd = open(outfile, 'wb')
+            # to avoid doubled efforts
+            errlines = errata_report(errmaps)
+            pkglines = package_report(RHN, pkgmaps)
+
+            RHN.logInfo("Found %d Errata to Sync" % len(errlist))
+            RHN.logInfo("Found %d packages not provided by errata" % len(nonerrpkgs))
+            # replaced to print something useful instead :)
+                
+            # produce output in test mode only.
+            # if we specified an output file, try to open it for writing
+            if opts.output and opts.test:
+                try:
+                    fd = open(opts.output, 'wb')
+                    if len(errlines) > 0:
+                        print "%d errata found" % len(errlines)
+                        fd.write("\n".join(errlines))
+                        fd.write("\n")
+                    if len(pkglines) > 0:
+                        print "%d packages found" % len(pkglines)
+                        fd.write("\n".join(pkglines))
+                    sys.exit(0)
+                except OSError:
+                    RHN.logError("Unable to create output file %s" % opts.output)
+                    RHN.logError("error was", exc_info=True)
+                    print "oops, cannot create output file %s" % opts.output
+                    sys.exit(255)
+                    
+                finally:
+                    print "writing output to %s" % opts.output
+                    fd.close()
+            # test/report mode without output file, print report instead
+            elif opts.test:
                 if len(errlist) > 0:
-                    print "%d Errata found" % len(errlist)
-                    fd.writelines([
-                        "Errata to sync to %s\n" % opts.dest,
-                        "----------------------\n",
-                        ])
-                    fd.writelines(["%s\n" % e for e in errlist])
+                    print "Found %d errata to sync" % len(errlist)
+                    print "\n".join(errlines)
+                    print "\n"
+                else:
+                    print "no errata to sync"
+
                 if len(nonerrpkgs) > 0:
-                    print "%d Packages (not from errata)" % len(nonerrpkgs)
-                    fd.writelines([
-                        "Packages (not from Errata)\n",
-                        "--------------------------\n",
-                        ])
-                    fd.writelines(["%s\n" % e for e in nonerrpkgs])
-                fd.close()
-            except:
-                print "unable to write to output file %s" % outfile
+                    print "Found %d packages (not from errata) to sync" % len(nonerrpkgs)
+                    print "\n".join(pkglines)
+                    print "\n"
+                else:
+                    print "No non-errata packages to sync"
+                sys.exit(0)
+
+
+            else:
+                # we are not in test mode, try syncing stuff
+                print "Beginning sync process"
+                if len(errlist) > 0:
+                    # we have errata for syncing
+                    cloneme = set(x for x in errlist if rhpatt.match(x))
+                    publishme = errlist.difference(cloneme)
+
+                    # This is unlikely as we'll normally just do this for
+                    # cusotm channels, but nonetheless
+                    if len(cloneme) > 0:
+                        res = errata.cloneAsOriginal(RHN, destchannel, list(cloneme))
+                        if res:
+                            RHN.logInfo("Cloned %d errata into %s" %(len(cloneme), destchannel))
+                    if len(publishme) > 0:
+                        # we have to publish errata one-by-one
+                        # we'll show a progressbar for this
+                        widgets = ['Publishing Errata: ', 
+                                    Counter(), 
+                                    '/ %d [' % len(publishme), 
+                                    Percentage(), ']', 
+                                    Bar(), 
+                                    '(', Timer(), ')']
+                        pbar = ProgressBar(widgets=widgets, 
+                                           maxval=len(publishme), 
+                                           term_width=80).start()
+
+                        for ind, pberr in enumerate(publishme):
+                            RHN.logDebug("publishing %s" % pberr)
+                            res = errata.publishAsOriginal(RHN, pberr, destchan)
+                            if res:
+                                RHN.logInfo("Published %s" % pberr)
+                            else:
+                                RHN.logWarn("Failed to publish %s" % pberr)
+                            pbar.update(ind +1)
+
+                if len(nonerrpkgs) > 0:
+                    print "adding non-errata packages to channel"
+                    RHN.logInfo("Adding non-errata packages")
+                    pkgids = [ p.get('id') for p in pkgmaps ]
+                    if channel.addPackages(RHN, destchannel, pkgids):
+                        RHN.logInfo("Succesfully added %d packages to channel %s" %(len(nonerrpkgs), destchannel))
+                    else:
+                        RHN.logError("Failed to add pacakges to channel %s. See logs for details" % destchannel)
         else:
             print "Channel package lists are identical, nothing to sync"
+                
 
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
