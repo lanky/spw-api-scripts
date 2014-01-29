@@ -235,6 +235,13 @@ def parse_cmdline(argv):
         print "no output file provided, using stdout"
         opts.output = sys.stdout
 
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
     # finally...
     return opts, args
 
@@ -478,30 +485,23 @@ def main():
 
     # process command line options and arguments
     opts, args = parse_cmdline(sys.argv[1:])
-    if opts.debug:
-        rhnloglevel = 10
-    elif opts.verbose:
-        rhnloglevel = 20
-    else:
-        rhnloglevel = 30
 
     try:
-        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
-                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
-                                logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+        RHN = rhnapi.rhnSession(opts.server, 
+                                opts.login, 
+                                opts.password,
+                                config=opts.config, 
+                                savecreds=opts.cache, 
+                                debug=opts.debug,
+                                logfile = opts.logfile, 
+                                logenable = True,
+                                logname = os.path.basename(sys.argv[0]), 
+                                loglevel=opts.loglevel,
                                 )
-        # did we give the --verbose switch?
-        if opts.verbose:
-            RHN.enableVerbose()
-
-        # debug dials up the logging some more
-        if opts.debug:
-            RHN.enableDebug()
 
         if opts.group:
             RHN.logInfo("processing group %s" % opts.group)
-        # collect errata from cloned channel
+
         if opts.date:
             monthstart = "%s 00:00:00" % opts.date
             RHN.logInfo("Using date provided on commandline (%s)" % monthstart)
@@ -572,7 +572,8 @@ def main():
                               'children' : []
                             }
             else:
-                RHN.logError("Insufficient information provided. Without a group mapping, both channel and source labels are required")
+                RHN.logError("""Insufficient information provided. Without a group mapping,
+both channel and source labels are required""")
                 sys.exit(2)
 
         # otherwise, process the groups selected
