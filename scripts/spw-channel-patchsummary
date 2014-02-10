@@ -214,6 +214,13 @@ def parse_cmdline(argv):
     else:
         opts.priorities = []
 
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
     # if asked for a list of channel groups, no other args are required
     if opts.list:
         if not any(map(os.path.isfile, opts.channel_mapping)):
@@ -235,12 +242,6 @@ def parse_cmdline(argv):
         print "no output file provided, using stdout"
         opts.output = sys.stdout
 
-    if opts.debug:
-        opts.loglevel = 10
-    elif opts.verbose:
-        opts.loglevel = 20
-    else:
-        opts.loglevel = 30
 
     # finally...
     return opts, args
