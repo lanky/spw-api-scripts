@@ -1,0 +1,178 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright YEAR AUTHOR
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+"""
+lists packages from an erratum grouped by providing channel.
+Useful to see cloning/publising effects
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import errata
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process the commandline :)
+    """
+    preamble = "A short desrciption of what the script does. Will appear in --help output."
+    usagestr = "%prog [RHNOPTS] ERRATUM..."
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    errgrp = OptionGroup(parser, "Output options")
+    errgrp.add_option("-s", "--summary", action="store_true", default=False,
+        help="Show a brief summary of the erratum, not all details")
+    parser.add_option_group(errgrp)
+
+
+
+    if len(argv) == 0:
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+
+    # finally...
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+
+def main():    
+    opts, args = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    # initialise an RHN Session
+    # safety mechanism until the script actually works:
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+        errlist = []
+        sumstr = '%(advisory)-16s %(topic)s'
+        results = {}
+        for erratum in args:
+            chanpkgs = {}
+            RHN.logDebug("Fetching Package list for %s" % erratum)
+            errinfo = errata.getDetails(RHN, erratum)
+            if errinfo:
+                errinfo['advisory'] = erratum
+                errinfo['packages'] = '\n'.join([ "%(file)s" % pkg for pkg in  errata.listPackages(RHN, erratum)])
+#                errinfo['topic'] = errinfo['topic'].replace('\n', '\n                 ')
+                for pkg in errata.listPackages(RHN, erratum):
+                    for c in pkg.get('providing_channels', []):
+                        if chanpkgs.has_key(c):
+                            if pkg.get('file') in chanpkgs[c]:
+                                continue
+                            else:
+                                chanpkgs[c].add(pkg.get('file'))
+                        else:
+                            chanpkgs[c] = set([ pkg.get('file') ])
+                results[erratum] = { 
+                    'details' : errinfo,
+                    'packages' : chanpkgs
+                    }
+
+                print "%(advisory)s (%(synopsis)s)" % errinfo
+                for c in sorted(chanpkgs.keys()):
+                    if opts.summary:
+                        print "  %s (%d packages)" % (c, len(chanpkgs.get(c)))
+                    else:
+                        print "  %s" % c
+                        for pkg in chanpkgs.get(c):
+                            print "    %s" % pkg
+
+
+
+
+
+                                        
+
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main()
+
+
+
+# footer - do not edit below here
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:
