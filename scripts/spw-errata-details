@@ -139,7 +139,7 @@ def main():
             RHN.logError("No valid errata names found")
             sys.exit(2)
         
-        print errlist
+        # print errlist
         if opts.summary:
             print sumstr % { 'advisory' : 'Advisory', 'topic' : 'Topic' }
             print sumstr % { 'advisory': '========', 'topic' : '=====' }
