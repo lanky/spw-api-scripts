@@ -3,6 +3,7 @@
 # RHN/Spacewalk API script
 #
 # requires the python-rhnapi module
+# and python-progressbar
 #
 # Copyright (c) 2009-2012 Stuart Sears
 #
@@ -73,6 +74,7 @@ import os
 import time
 import csv
 from optparse import OptionParser, OptionGroup
+from rpmUtils.miscutils import splitFilename, compareEVR
 
 
 try:
@@ -255,7 +257,7 @@ def write_csv(data, filename, logger):
     """
     # fields = ['advisory', 'synopsis', 'issue_date', 'last_modified_date', 'urgency' , 'channel', 'description']
     # fields = ['advisory', 'synopsis', 'issue_date', 'last_modified_date', 'urgency' , 'channel']
-    fields = ['advisory', 'synopsis', 'issue_date', 'urgency' , 'channel']
+    fields = ['advisory', 'advisory_type', 'synopsis', 'issue_date', 'urgency' , 'destchannels']
     try:
         for row in data:
             syn = row['synopsis'].split(':')
@@ -266,8 +268,10 @@ def write_csv(data, filename, logger):
                 desc = syn[0]
             row['urgency']  = urg.strip()
             row['synopsis'] = desc.strip()
+            row['destchannels'] = '|'.join(row.get('channels'))
 
-        print "writing %d entries to %s" %(len(data), str(filename))
+        if filename is not sys.stdout:
+            print "writing %d entries to %s" %(len(data), str(filename))
         mywriter = utils.csvReport(data, filename, fields = fields)
         logger.info("wrote %d lines to %s" %(len(data), str(filename)))
         return mywriter
@@ -276,145 +280,6 @@ def write_csv(data, filename, logger):
         logger.warn("An Exception Occurred: %s" % E.__str__())
         logger.critical("ERROR: could not write to file %s" % filename)
         return False
-
-# ---------------------------------------------------------------------------- #
-
-def diff_errata(rhn, chanobj, date, end='', newest=False):
-    """
-    returns a dict of errata since the given date that have not been
-    cloned from source to dest channels
-
-    parameters:
-    rhn(rhnapi.rhnSession)  - authenticated RHN session object
-    chanlabel (str)         - channel label
-    source(str)             - SOURCE channel label (usually where 'chanlabel' was cloned from)
-    date(str)               - list errata since the given date fmt: YYYY-MM-DD HH:MM:SS
-    newest(bool)            - whether to only consider the newest errata (based on synopsis)
-    """
-    chanlabel = chanobj.get('label')
-    chansource = chanobj.get('source')
-    results = []
-    chanerrata = channel.listErrata(rhn, chanlabel)
-    # for splitting out repeated errata
-    chankeys = [ x['advisory'].split('-')[1] for x in chanerrata ]
-    srcerrata = channel.listErrata(rhn, chansource, start_date = date, end_date = end)
-    for e in srcerrata:
-        # this avoids clones of existing errata being included
-        if e['advisory'].split('-')[1] not in chankeys:
-            e['channel'] = chanlabel
-            del e['last_modified_date']
-            results.append(e)
-
-    if newest:
-        rhn.logInfo("reducing list of errata to latest only (by synopsis)")
-        latest = latest_by_synopsis(results, rhn.logger)
-        rhn.logDebug("Reduced errata list from %d to %d errata"  %(len(results), len(latest)))
-        print "Found %d errata (latest only) for %s" %(len(latest), chanobj['label'])
-        return latest
-
-    else:
-        rhn.logDebug("Found %d errata" % len(results))
-        print "Found %d errata for %s" %(len(results), chanobj['label'])
-        return results
-
-# ---------------------------------------------------------------------------- #
-
-def advisory_is_newer(advisory1, advisory2):
-    """
-    Simply splits up normal advisory strings and returns the newest one
-    This does proper integer comparisons on the numerical parts
-    returns True if advisory1 is newer, False if otherwise
-    """
-    # pull relevant info out of advisory names
-    val1 = advisory1.split('-')[1]
-    yr1, n1 = map(int, val1.split(':'))
-    # and the second one too
-    val2 = advisory2.split('-')[1]
-    yr2, n2 = map (int, val2.split(':'))
-
-    if yr1 < yr2:
-        return False
-    elif yr1 > yr2 :
-        return True
-    else:
-        if n1 > n2:
-            return True
-        else:
-            return False
-    # we should never get here
-    print "eeek. Out of cheese error!"
-    return False
-
-# ---------------------------------------------------------------------------- #
-
-def latest_by_synopsis(errlist, logger):
-    # need to get a list of the latest errata with a given synopsis based on date
-    index = {}
-    for err in errlist:
-        # we don't need the urgency here, as a newer 'important' erratum
-        # will also contain the fixes from earlier 'critical' ones
-        synsplit = err.get('synopsis').split(':')
-        if len(synsplit) > 1:
-            err['priority'] = synsplit[0].strip()
-            syn = synsplit[1].strip()
-        else:
-            syn = synsplit[0].strip()
-            err['priority']  = "None"
-        name = err.get('advisory')
-        if index.has_key(syn):
-            curr = index[syn].get('advisory')
-            logger.debug("Entry for synopsis '%s' already exists [%s]. Comparing values." % (syn, curr))
-# debuggery logging
-            if advisory_is_newer(name, curr):
-                logger.debug("%s is newer than %s" %(name, curr))
-                index[syn].update(err)
-            else:
-                logger.debug("%s is not newer than %s. Continuing" %(name, curr))
-                continue
-        else:
-            index[syn] = err
-    # just return the values, we don't need the keys
-    return index.values()
-
-# ---------------------------------------------------------------------------- #
-
-def reduce_errata(errlist, logger, priolist=[], typelist=[]):
-    """
-    munge and reduce our list of errata based on priority and 'type'
-    """
-    res = []
-    logger.debug("parsing for priorities: %r" % priolist)
-    logger.debug("parsing for errata types: %r" % typelist)
-    for e in errlist:
-        delete = False
-        if len(priolist) != 0:
-        # split up the synopsis on ':' characters
-        # this works even if there aren't any
-            synlist = [ x.strip() for x in e.get('synopsis').split(':', 1) ]
-        # if we have only one item, no priority was given
-            if len(synlist) == 1:
-                logger.debug("%(advisory)s has no assigned priority, skipping" % e)
-                e['priority'] = "None"
-                delete = True
-            else:
-                e['priority'] = synlist[0].strip()
-
-            if e['priority'] not in priolist:
-                logger.debug("Skipping %(advisory)s due to priority selection [ %(priority)s ]" % e)
-                delete = True
-        if len(typelist) != 0 :
-            if e.get('advisory_type') not in typelist:
-                logger.debug("Skipping %(advisory)s due to type selection [ %(advisory_type)s ]" % e)
-                delete = True
-
-        # if we're still here...
-        if not delete:
-            res.append(e)
-    if len(res) < len(errlist):
-        print "Removed %d errata by type/priority selection. List now contains %d errata" %(len(errlist),len(res))
-        logger.info("Type and priority selection reduced list from %d to %d errata" %(len(errlist),len(res)))
-
-    return res
 
 # ---------------------------------------------------------------------------- #
 
@@ -473,6 +338,302 @@ def loadYAML(inputfile, logger):
     except:
         logger.error("unable to load YAML data from %s" % inputfile)
         return None
+
+
+# ---------------------- ERRATA PROCESSING BEGINS HERE ----------------------- #
+
+def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=False):
+    """
+    returns a dict of errata since the given date that have not been
+    cloned from source to dest channels
+
+    parameters:
+    rhn(rhnapi.rhnSession)  - authenticated RHN session object
+    chanlabel (str)         - channel label
+    source(str)             - SOURCE channel label (usually where 'chanlabel' was cloned from)
+    date(str)               - list errata since the given date fmt: YYYY-MM-DD HH:MM:SS
+    newest(bool)            - whether to only consider the newest errata (based on synopsis)
+    """
+    # we'll generate an index of errata to apply in this,
+    # { advisory : { errobj } }
+    errindex = {}
+    # we're now processing a list of channel mappings, with label and source keys
+    # print chanlist
+    if len(typelist) > 0:
+        print "types: %r" % typelist
+    if len(priolist) > 0:
+        print "priorities: %r" % priolist
+    for chanobj in chanlist:
+        results = []
+        chanlabel = chanobj.get('label')
+        chansource = chanobj.get('source')
+        print "processing errata for channel %(label)s (source: %(source)s)" % chanobj
+        # errata that are already in our channel:
+        chanerrata = channel.listErrata(rhn, chanlabel)
+        # this way we can compare keys AND synopses for accuracy
+        chanindex = dict(zip([ x['advisory'].split('-')[1] for x in chanerrata ], chanerrata))
+
+        print "Got %d errata in destination channel" % len(chanindex.keys())
+
+        srcerrata = channel.listErrata(rhn, chansource, start_date = date, end_date = end)
+        print "Got %d errata in source channel" % len(srcerrata)
+
+        ## this is where we should do the payload comparisons
+
+        # let's try and do only one pass over this list of dicts
+        typecount = 0
+        priocount = 0
+        clonecount = 0
+
+
+        # walk our list of potential errata
+        for e in srcerrata:
+            adv = e.get('advisory_name')
+            if errindex.has_key(adv):
+                # we've already processed this and have no need to do it again
+                rhn.logDebug("skipping already processed erratum %(advisory_name)s" % e)
+                # ensure it mentions our channel label
+                errindex[adv]['channels'].append(chanlabel)
+                continue
+            else:
+                # we haven't already seen and accepted this one
+                rhn.logDebug("Processing %(advisory_name)s" % e)
+                errkey = e['advisory'].split('-')[1]
+                # extract the "priority" from the erratum synopsis
+                prio = e.get('synopsis').split(':', 1)
+                if len(prio) > 1:
+                    e['priority'] = prio[0].strip()
+                else:
+                    e['priority'] = "None"
+                
+                # remove errata that are not of the chosen type(s)
+                if len(typelist) > 0 and e['advisory_type'].strip() not in typelist:
+                    rhn.logDebug("removed %(advisory_name)s [%(advisory_type)s] according to --type selection" % e)
+                    typecount += 1
+                    continue
+                # remove errata that don't match our priority list
+                elif len(priolist) > 0 and e['priority'] not in priolist:
+                    rhn.logDebug("removed %(advisory_name)s [%(priority)s] according to --priority selection" % e)
+                    priocount += 1
+                    continue
+                # remove errata that have already been cloned
+                # as they usually have the same YYYY:NNNN fields (e.g. RHBA-2013:0001 => CLA-2013:0001)
+                elif errkey in chanindex.keys():
+                    # double check on synopsis
+                    if chanindex[errkey].get('synopsis').strip() == e.get('synopsis').strip():
+                        rhn.logDebug("removed %(advisory_name)s [%(synopsis)s] due to index and synopsis match" % e)
+                        clonecount += 1
+                        continue
+                else:
+                    # we're keeping this one
+                    # label the errata with its target channel
+                    rhn.logDebug("keeping erratum %(advisory_name)s" % e)
+                    results.append(e)
+                    # add it to our index (this will replace any existing entries with this
+                    e['channels'] = [ chanlabel ]
+                    errindex[e.get('advisory')] = e
+
+        # so far, we have removed
+        # already-cloned errata
+        if clonecount != 0:            
+            print "removed %d already-cloned errata" % clonecount
+        # types we don't want
+        if typecount != 0 :
+            print "removed %d errata by type selection" % typecount
+        # priorities we don't want
+        if priocount != 0:
+            print "removed %d errata by priority selection" % priocount
+
+    removed = len(srcerrata) - len(results)
+    print "Removed %d errata, leaving %d to consider" %(removed, len(results))
+
+    print "%d errata to consider across %d channels" %(len(errindex.keys()), len(chanlist))
+
+    if newest:
+        rhn.logInfo("doing simplistic reduction by synopsis and date")
+        reduce_by_synopsis(errindex, rhn.logger)
+        print "reduced list to %d errata by synopsis" % len(errindex.keys())
+        rhn.logInfo("reducing list of errata to latest only, by packages")
+        reduce_by_payload(rhn, errindex)
+        print "reduced list to %d entries by package comparison" % len(errindex.keys())
+
+    return errindex.values()
+
+
+# ---------------------------------------------------------------------------- #
+def reduce_by_synopsis(errdict, logger):
+    """
+    Find the newest (most recent, based on advisory name) erratum for each synopsis
+
+    Edits the errdict object in place, so no return value
+    """
+    # need to get a list of the latest errata with a given synopsis based on date
+    # errdict is a bit like this:
+    # {
+    #  'RHSA-2014:0310': {
+    #                'advisory': 'RHSA-2014:0310',
+    #                'advisory_name': 'RHSA-2014:0310',
+    #                'advisory_synopsis': 'Critical: firefox security update',
+    #                'advisory_type': 'Security Advisory',
+    #                'date': '2014-03-18 04:00:00',
+    #                'id': 9035,
+    #                'issue_date': '2014-03-18 04:00:00',
+    #                'last_modified_date': '2014-03-18 20:27:16',
+    #                'synopsis': 'Critical: firefox security update',
+    #                'update_date': '2014-03-18 04:00:00'},
+    #                'channels' : [ chan1, chan2... ],
+    #                'priority' : 'Critical',
+    # ...
+    # }
+
+    # for keeping records of the 'latest' matching synopsis
+    # e.g, based on the above example - we don't need the 'Critical' part
+    # { 'firefox security update' : 'RHSA-2014:0310'}
+    synindex = {}
+
+    for adv, err in errdict.iteritems():
+        # strip the priority off the 'synopsis', that's not used for comparison
+        # A newer 'important' erratum will also contain the fixes from earlier 'critical' ones
+
+        # this will result in a list, length 1 or 2 only
+        synsplit = err.get('synopsis').split(':', 1)
+        if len(synsplit) == 2:
+            err['priority'] = synsplit[0].strip()
+            syn = synsplit[1].strip()
+        else:
+            syn = synsplit[0].strip()
+            err['priority']  = "None"
+
+        # name = err.get('advisory')
+
+        if synindex.has_key(syn):
+            curr = synindex[syn]
+            logger.debug("Entry for synopsis '%s' already exists [%s]. Comparing values." % (syn, curr))
+
+            if advisory_is_newer(adv, curr):
+                logger.debug("%s is newer than %s" %(adv, curr))
+                synindex[syn] = adv
+            else:
+                logger.debug("%s is not newer than %s. Continuing" %(adv, curr))
+                continue
+        else:
+            logger.debug("adding %s [%s] to index" %(syn, adv))
+            synindex[syn] = adv
+
+        # print synindex
+
+    for adv in errdict.keys():
+        if adv not in synindex.values():
+            del errdict[adv]
+
+# ---------------------------------------------------------------------------- #
+
+def reduce_by_payload(rhn, errindex):
+    """
+    processes a list of errata, comparing their packagelists to find the newest ones.
+
+    Parameters:
+        rhn (rhnapi.rhnSession): authenticated RHN session object
+        errdict (dict of dict): indexed dictionary of errata objects
+
+    Returns:
+        list of dict, one per remaining erratum, including package information
+    """
+    if len(errindex.keys()) == 0:
+        rhn.logDebug("no errata to consider, nothing to do")
+        return errindex
+    # get an index of the erratalist, by advisory name
+    # we're now passing this in as a parameter
+    # errindex = dict(zip([e.get('advisory_name') for e in errlist], errlist))
+    # for indexing on latest packages
+    pkgindex = {}
+
+    rhn.logInfo("Processing errata payloads to get latest packages")
+    rhn.logInfo("%d errata to consider" % len(errindex))
+
+    print "Processing packages for %d errata. This may be a slow process" % len(errindex)
+
+    widgets = [ "Processing ", Counter(), " Errata" "[",Percentage(),"]", Bar(), Timer() ]
+    pbar = ProgressBar(widgets=widgets, maxval=len(errindex), term_width=80).start()
+    for idx, erratum in enumerate(errindex.keys()):
+        # returns a list of dictionaries
+        rhn.logDebug("processing %s" % erratum)
+        pkglist = errata.listPackages(rhn, erratum)
+        # just for giggles, let's remember our packagelist for future reference
+        chanpkgs = {}
+        # compare each package dict against our index
+        for p in pkglist:
+            for ch in p.get('providing_channels'):
+                if chanpkgs.has_key(ch):
+                    chanpkgs[ch].append(p.get('file'))
+                else:
+                    chanpkgs[ch] = [ p.get('file') ]
+            namearch = "%(name)s.%(arch_label)s" % p
+            # construct an EVR for comparison purposes
+            evr = ( p.get('epoch').strip(), p.get('version'), p.get('release'))
+            # see if we already have a record for this package
+
+            # what we'll store if the current pkg is newer:
+            pkgrec =  { 'evr' : evr, 'file': p.get('file'), 'erratum' : erratum }
+            
+            # get any existing record for this namearch pair
+            cur = pkgindex.get(namearch)
+            if cur is None:
+                update = True
+            else:
+                update = compareEVR(evr, cur.get('evr')) > 0
+
+            if update:
+                if cur is None:
+                    rhn.logDebug("%s (%s) not present in index, adding it" %(p.get('file'), erratum))
+                else:
+                    rhn.logDebug("%s (%s) > %s (%s), replacing it." %(p.get('file'), erratum, cur.get('file'), cur.get('erratum')))
+                pkgindex[namearch] = pkgrec
+            else:
+                continue
+
+            # update the progressbar
+            pbar.update(idx + 1)
+
+            errindex[erratum]['chanpkgs'] = chanpkgs
+
+    print
+    # now we need to extract all the goodness from our index
+    errnames = set([p.get('erratum') for p in pkgindex.values()])
+    utils.dumpJSON(pkgindex, '/tmp/pkgindex.json')
+    for err in errindex.keys():
+        if err not in errnames:
+            del errindex[err]
+
+    rhn.logInfo("Reduced errata list to %d entries by package comparison" % len(errnames))
+
+# ---------------------------------------------------------------------------- #
+
+def advisory_is_newer(advisory1, advisory2):
+    """
+    Simply splits up normal advisory strings and returns the newest one
+    This does proper integer comparisons on the numerical parts
+    returns True if advisory1 is newer, False if otherwise
+    """
+    # pull relevant info out of advisory names
+    val1 = advisory1.split('-')[1]
+    yr1, n1 = map(int, val1.split(':'))
+    # and the second one too
+    val2 = advisory2.split('-')[1]
+    yr2, n2 = map (int, val2.split(':'))
+
+    if yr1 < yr2:
+        return False
+    elif yr1 > yr2 :
+        return True
+    else:
+        if n1 > n2:
+            return True
+        else:
+            return False
+    # we should never get here
+    print "eeek. Out of cheese error!"
+    return False
 
 
 # ---------------------------------------------------------------------------- #
@@ -573,51 +734,26 @@ def main():
                               'children' : []
                             }
             else:
-                RHN.logError("""Insufficient information provided. Without a group mapping,
-both channel and source labels are required""")
+                RHN.logError("""Insufficient information provided. Without a group mapping, both channel and source labels are required""")
                 sys.exit(2)
 
-        # otherwise, process the groups selected
-        # now process our channels and their sources:
-        # diff_errata(rhn, chanlabel, source, date)
+        # merge groupinfo into a list of dict, 'label', 'source' keys
         if groupinfo is not None:
-            RHN.logInfo("processing Base Channel %(label)s" % groupinfo)
-            results = diff_errata(RHN, groupinfo, monthstart, enddate, opts.latest)
+            grouplist = [ { 'label' : groupinfo.get('label'), 'source' : groupinfo.get('source') } ]
+            for child in groupinfo.get('children'):
+                grouplist.append( { 'label' : child.get('label'), 'source' : child.get('source') })
+            RHN.logInfo("processing channel group %s" % opts.group)
+            results = diff_errata(RHN, grouplist, monthstart, enddate, opts.errtypes, opts.priorities, opts.latest)
         else:
             results = []
 
-        # process each child channel in turn
-        for childchan in groupinfo.get('children', []):
-            RHN.logInfo("processing child channel %(label)s" % childchan)
-            kerr = diff_errata(RHN, childchan, monthstart, enddate, opts.latest)
-            if len(kerr) > 0:
-                results.extend(kerr)
-
-        # reduce errata according to preferences
-        reduced_errata = reduce_errata(results, RHN.logger, opts.priorities, opts.errtypes)
-
-        # fetch details for all our errata
-        if opts.progress:
-            widgets = [ 'Processing: ', Counter(), ' errata [ ', Percentage(), ' ]', Bar(), '(', Timer(), ')' ]
-            pbar = ProgressBar(widgets=widgets, maxval=len(reduced_errata)).start()
-
-        for idx, err in enumerate(reduced_errata):
-            errdata = errata.getDetails(RHN, err['advisory'])
-            if opts.progress:
-                pbar.update(idx + 1)
-        # this is in a stupid hardcoded US format...
-            del errdata['issue_date']
-            err.update(errdata)
-            if opts.debug:
-                RHN.logDebug("%(advisory)s - %(advisory_type)s - %(synopsis)s" % err)
-
-        print
 
         # now we need to write a CSV file, use cvs.DictWriter, it'll be easier :)
         if opts.group:
             print "Errata for %s since %s" %(opts.group, monthstart)
-        if len(reduced_errata) > 0:
-            if write_csv(reduced_errata, opts.output, RHN.logger):
+        if len(results) > 0:
+            utils.dumpJSON(results, '/tmp/patchlist.json')
+            if write_csv(results, opts.output, RHN.logger):
                 RHN.logInfo("CSV output successful")
         else:
             RHN.logInfo("No Errata to synchronise")
