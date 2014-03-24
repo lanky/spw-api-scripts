@@ -170,12 +170,11 @@ def parse_cmdline(argv):
     changrp = OptionGroup(parser, "Channel Selection Options")
     changrp.add_option("-c", "--channel", help = "cloned channel label to summarise")
     changrp.add_option("-s", "--source", help = "Source channel (where CHANNEL was cloned from")
-    changrp.add_option("-o", "--output", help = "Output File for results")
     changrp.add_option("-m", "--channel-mapping",
         help = "JSON or YAML-format file grouping/mapping source and cloned channels", default = None)
     changrp.add_option("-g", "--group", help = "Channel group (from mapping file) to summarise")
     changrp.add_option("-l", "--list", action = "store_true", default = False,
-        help = "display a list of channel mappings from the configuration file")
+        help = "display a list of channel mappings from the configuration file (and exit)")
     changrp.add_option("-i", "--info", action = "store_true", default = False,
         help = "display clone info about the chosen group and exit (requires -g/--group)")
     parser.add_option_group(changrp)
@@ -191,6 +190,13 @@ def parse_cmdline(argv):
         help="""importance of errata to include. Comma-separated list, no spaces. Choose from 'critical',
 'important','moderate', and 'low'. All levels are displayed by default""")
     parser.add_option_group(errgrp)
+
+    outgrp = OptionGroup(parser, "Output selection")
+    outgrp.add_option("-o", "--output", help="Output file for results in CSV format (prints to stdout if not specified and --report is not used)")
+    outgrp.add_option("-j", "--json", help= "Dump errata information as JSON to the selected file")
+    outgrp.add_option("--report", action="store_true", default=False,
+        help="Pretty-print a report. Overrides CSV output to stdout (although -o still works)")
+    parser.add_option_group(outgrp)
 
     if len(argv) == 0:
         parser.print_help()
@@ -239,11 +245,6 @@ def parse_cmdline(argv):
 
         if not opts.source:
             error( "ERROR: Which channel was %s cloned from?" % opts.channel, 2)
-
-    if not opts.output:
-        print "no output file provided, using stdout"
-        opts.output = sys.stdout
-
 
     # finally...
     return opts, args
@@ -371,12 +372,13 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
         # errata that are already in our channel:
         chanerrata = channel.listErrata(rhn, chanlabel)
         # this way we can compare keys AND synopses for accuracy
+        # this gives us the YYYY:NNNN part of the erratum name (e.g. 2014:0015 )
         chanindex = dict(zip([ x['advisory'].split('-')[1] for x in chanerrata ], chanerrata))
 
-        print "Got %d errata in destination channel" % len(chanindex.keys())
-
+        rhn.logInfo("Got %d errata in destination channel" % len(chanindex.keys()))
+        # get a list of errata from thew source channel
         srcerrata = channel.listErrata(rhn, chansource, start_date = date, end_date = end)
-        print "Got %d errata in source channel" % len(srcerrata)
+        rhn.logInfo("Got %d errata in source channel %s" % (len(srcerrata), chansource))
 
         ## this is where we should do the payload comparisons
 
@@ -384,7 +386,6 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
         typecount = 0
         priocount = 0
         clonecount = 0
-
 
         # walk our list of potential errata
         for e in srcerrata:
@@ -401,10 +402,17 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
                 errkey = e['advisory'].split('-')[1]
                 # extract the "priority" from the erratum synopsis
                 prio = e.get('synopsis').split(':', 1)
+                rhn.logDebug("priority: %s" % prio[0])
                 if len(prio) > 1:
+                    rhn.logDebug("adding 'priority' %s to erratum" % prio[0].strip())
+                    # store the RH priority
                     e['priority'] = prio[0].strip()
+                    # remove it from the 'synopsis' string
+                    e['synopsis'] = prio[1].strip()
                 else:
                     e['priority'] = "None"
+
+                # print e['priority']
                 
                 # remove errata that are not of the chosen type(s)
                 if len(typelist) > 0 and e['advisory_type'].strip() not in typelist:
@@ -427,7 +435,7 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
                 else:
                     # we're keeping this one
                     # label the errata with its target channel
-                    rhn.logDebug("keeping erratum %(advisory_name)s" % e)
+                    rhn.logDebug("keeping erratum %(advisory_name)s [%(advisory_type)s / %(priority)s]" % e)
                     results.append(e)
                     # add it to our index (this will replace any existing entries with this
                     e['channels'] = [ chanlabel ]
@@ -436,26 +444,27 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
         # so far, we have removed
         # already-cloned errata
         if clonecount != 0:            
-            print "removed %d already-cloned errata" % clonecount
+            rhn.logInfo("removed %d already-cloned errata" % clonecount)
         # types we don't want
         if typecount != 0 :
-            print "removed %d errata by type selection" % typecount
+            rhn.logInfo("removed %d errata by type selection" % typecount)
         # priorities we don't want
         if priocount != 0:
-            print "removed %d errata by priority selection" % priocount
+            rhn.logInfo("removed %d errata by priority selection" % priocount)
 
     removed = len(srcerrata) - len(results)
-    print "Removed %d errata, leaving %d to consider" %(removed, len(results))
+    rhn.logInfo("Removed %d errata, leaving %d to consider" %(removed, len(results)))
 
-    print "%d errata to consider across %d channels" %(len(errindex.keys()), len(chanlist))
+    print "%d unsynchronised errata to consider across %d channels" %(len(errindex.keys()), len(chanlist))
 
     if newest:
-        rhn.logInfo("doing simplistic reduction by synopsis and date")
+        print "reducing list to only latest applicable errata"
+        print "doing simplistic reduction by synopsis and date"
         reduce_by_synopsis(errindex, rhn.logger)
-        print "reduced list to %d errata by synopsis" % len(errindex.keys())
-        rhn.logInfo("reducing list of errata to latest only, by packages")
+        rhn.logInfo("reduced list to %d errata by synopsis" % len(errindex.keys()))
+        print "reducing list of errata to latest only, by package comparison"
         reduce_by_payload(rhn, errindex)
-        print "reduced list to %d entries by package comparison" % len(errindex.keys())
+        rhn.logInfo("reduced list to %d entries by package comparison" % len(errindex.keys()))
 
     return errindex.values()
 
@@ -496,15 +505,17 @@ def reduce_by_synopsis(errdict, logger):
         # A newer 'important' erratum will also contain the fixes from earlier 'critical' ones
 
         # this will result in a list, length 1 or 2 only
-        synsplit = err.get('synopsis').split(':', 1)
-        if len(synsplit) == 2:
-            err['priority'] = synsplit[0].strip()
-            syn = synsplit[1].strip()
-        else:
-            syn = synsplit[0].strip()
-            err['priority']  = "None"
-
+#        synsplit = err.get('synopsis').split(':', 1)
+        # but we've already done this!
+#         if len(synsplit) == 2:
+#             err['priority'] = synsplit[0].strip()
+#             syn = synsplit[1].strip()
+#         else:
+#             syn = synsplit[0].strip()
+#             err['priority']  = "None"
+# 
         # name = err.get('advisory')
+        syn = err.get('synopsis')
 
         if synindex.has_key(syn):
             curr = synindex[syn]
@@ -638,6 +649,62 @@ def advisory_is_newer(advisory1, advisory2):
 
 # ---------------------------------------------------------------------------- #
 
+def print_report(data, chanlist):
+    """
+    pretty-prints a report of our results, easier to parse for humans than CSV
+
+    Parameters:
+        data (list of dict):
+            list of dictionary objects, each representing an erratum and the packages
+            it affects, categorised by channel.
+    """
+    # the keys we are likely to care about 
+    # (* indicates a custom key, put there by the script)
+    # advisory / advisory_name
+    # synopsis / advisory_synopsis
+    # *chanpkgs: map from SOURCE channels to provided packages
+    # *priority: (security errata only: Critical/Important...), others: "None"
+
+    # first, let's map our chanlist to a simple dictionary
+    chandict = {}
+    # this simply means we get a dict as follows:
+    # { 'rhel-x86_64-server-6' : 'my-clone-name', 'rhel-...' for our group }
+    for chan in chanlist:
+        source = chan.get('source')
+        label = chan.get('label')
+        chandict[source] = label
+
+    # output:
+    # Erratum Type Priority Synopsis Affected channels (package count)
+    # ======= ==== ======== ======== =================================
+
+    # so, we need a format str for each erratum
+    # basic format.
+    
+    maxlen = utils.getMaxLen(data)
+    if data[0].has_key('chanpkgs'):
+        fmtstr = "%%(advisory)-%(advisory)ds | %%(advisory_type)-%(advisory_type)ds | %%(priority)-%(priority)ds | %%(synopsis)-%(synopsis)ds | %%(affected_channels)s" % maxlen
+        print fmtstr % { 'advisory' : 'Advisory', 'advisory_type' : 'Type', 'priority' : 'Priority', 'synopsis' : 'Synopsis', 'affected_channels' : 'Affected Channels (packagecount)'}
+        print fmtstr % { 'advisory' : '========', 'advisory_type' : '====', 'priority' : '========', 'synopsis' : '========', 'affected_channels' : '================================'}
+    else:
+        fmtstr = "%%(advisory)-%(advisory)ds | %%(advisory_type)-%(advisory_type)ds | %%(priority)-%(priority)ds | %%(synopsis)-%(synopsis)ds" % maxlen
+        print fmtstr % { 'advisory' : 'Advisory', 'advisory_type' : 'Type', 'priority' : 'Priority', 'synopsis' : 'Synopsis' }
+        print fmtstr % { 'advisory' : '========', 'advisory_type' : '====', 'priority' : '========', 'synopsis' : '========' }
+
+    # print fmtstr
+    for err in data:
+        if err.has_key('chanpkgs'):
+            affected_channels = []                    
+            for chan, pkglist in err['chanpkgs'].iteritems():
+                label = chandict.get(chan)
+                if label in err['channels']:
+                    affected_channels.append("%s(%d)" %( label, len(pkglist) ))
+            err['affected_channels'] = ', '.join(affected_channels)                    
+            
+        print fmtstr % err
+
+# ---------------------------------------------------------------------------- #
+
 def main():
     """
     The core script content
@@ -747,14 +814,26 @@ def main():
         else:
             results = []
 
-
         # now we need to write a CSV file, use cvs.DictWriter, it'll be easier :)
-        if opts.group:
-            print "Errata for %s since %s" %(opts.group, monthstart)
         if len(results) > 0:
-            utils.dumpJSON(results, '/tmp/patchlist.json')
-            if write_csv(results, opts.output, RHN.logger):
-                RHN.logInfo("CSV output successful")
+            # temporary debuggery output
+            if opts.json:
+                if utils.dumpJSON(results, opts.json):
+                    RHN.logInfo("JSON output to %s successful" % opts.json)
+
+            # this should work no matter what
+            if opts.output:
+                if write_csv(results, opts.output, RHN.logger):
+                    RHN.logInfo("CSV output successful")
+            if opts.group:
+                print "Errata for %s since %s" %(opts.group, monthstart)
+            if opts.report:
+                print_report(results, grouplist)
+                sys.exit(0)
+            else:
+                sys.stderr.write("No output file specified, printing CSV to stdout\n")
+                if write_csv(results, sys.stdout, RHN.logger):
+                    RHN.logInfo("CSV output successful")
         else:
             RHN.logInfo("No Errata to synchronise")
 
