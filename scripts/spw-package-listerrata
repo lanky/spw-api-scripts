@@ -23,6 +23,15 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/
 
+# 2014-03-24
+# TODO: refactor this to add package lists by target channel
+# e.g. 
+# RHSA-2014:0015 (synopsis)
+# [rhel-x86_64-server-6]
+#   package1.rpm
+# [rhel-x86_64-server-optional-6]
+#   package2.rpm
+
 
 __author__ = "Stuart Sears <stuart.sears@man.com>"
 
@@ -39,6 +48,8 @@ from pprint import pprint
 from operator import itemgetter
 # extracting elements from RPM file names
 from rpmUtils.miscutils import splitFilename
+# globbing
+from fnmatch import fnmatch
 # for progress display:
 from progressbar import Counter,Percentage,ProgressBar,Timer,Bar
 
@@ -210,6 +221,8 @@ if __name__ == '__main__':
             if not channel.getDetails(RHN, opts.channel):
                 RHN.logError("No such channel %s" % opts.channel)
                 sys.exit(5)
+            else:
+                chanerrata = [ err.get('advisory_name') for err in channel.listErrata(RHN, opts.channel) ]
         # so we can test for existence/content
         filelist = set()
         # were we given a proper lucene query string?
@@ -271,8 +284,11 @@ if __name__ == '__main__':
             # we only really need the IDs though
             if opts.channel:
                 matches = packages.searchChannel(RHN, query, opts.channel)
+                chanerr = set([ err.get('advisory') for err in channel.listErrata(RHN, opts.channel) ])
             else:
                 matches = packages.search(RHN, query)
+                # to avoid having it undefined
+                chanerrata = set([])
             
             if not matches:
                 if query.find('epoch') != -1:
@@ -313,6 +329,8 @@ if __name__ == '__main__':
             RHN.logError("None of the provided search strings or filenames produced any results")
             sys.exit(4)
         else:
+            # check that the packages we found actually match our specification
+            # lucene querying on the satellite seems to do wildcard matching
             RHN.logInfo("Found %d packages" % len(pkgs))
             # key => packagelists mapping
             errmaps = {}
@@ -326,6 +344,12 @@ if __name__ == '__main__':
             pbar = ProgressBar(widgets=widgets, maxval=len(pkgs), term_width=80).start()
             for counter, p in enumerate(pkgs):
                 pname = "%(name)s-%(version)s-%(release)s.%(arch)s" % p
+                # fix the automatic lucene wildcards. Only act on specific wildcards.
+                if opts.name and not fnmatch(opts.name,p.get('name')):
+                    RHN.logDebug ("skipping non-matching package %s" % pname)
+                    pbar.update(counter +1)
+                    continue
+
                 RHN.logDebug("Processing %s" % pname)
                 pid = p.get('id')
                 if pid in seen:
@@ -353,24 +377,25 @@ if __name__ == '__main__':
                     continue
                 else:
                     # we have more than one erratum.
+                    if opts.channel:
+                        # reduce our errata list to only those in the selected channel
+                        perr.intersection_update(chanerrata)
+
+                    # now find all RH errata in our list, just in case
                     rherr = set(e for e in perr if rhpatt.match(e))
+                    clerr = perr.difference(rherr)
+                    if len(clerr) == 0 and not opts.redhat:
+                        RHN.logWarn("There are no cloned errata providing the selected package(s), displaying RH errata")
+
+
                     # in general I'd expect a package to come from exactly one RH erratum
                     # but possibly multiple clones. Unless we've had a much vaguer package spec than is
                     # ideal.
                     pidlist = set([])
-                    if opts.redhat:
+                    # now the processing. the logic appears mildly flawed here.
+                    # what if we only have RH errata to choose from?
+                    if opts.redhat or len(clerr) == 0:
                         for e in rherr:
-                            if opts.channel:
-                                errpkgs = [ pk for pk in errata.listPackages(RHN, e) if opts.channel in pk.get('providing_channels') ]
-                            else:
-                                errpkgs = errata.listPackages(RHN, e)
-                            pidlist.update(p.get('id') for p in errpkgs)
-                            add_or_update_key(errmaps, e, set('%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errpkgs).intersection(filelist))
-                        seen.update(pidlist)
-                        errlist.update(rherr)
-                    else:
-                        perr.difference_update(rherr)
-                        for e in perr:
                             if opts.channel:
                                 errpkgs = [ pk for pk in errata.listPackages(RHN, e) if opts.channel in pk.get('providing_channels') ]
                             else:
@@ -378,7 +403,17 @@ if __name__ == '__main__':
                             pidlist.update(p.get('id') for p in errpkgs)
                             add_or_update_key(errmaps, e, set('%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errpkgs))
                         seen.update(pidlist)
-                        errlist.update(perr)
+                        errlist.update(rherr)
+                    else:
+                        for e in clerr:
+                            if opts.channel:
+                                errpkgs = [ pk for pk in errata.listPackages(RHN, e) if opts.channel in pk.get('providing_channels') ]
+                            else:
+                                errpkgs = errata.listPackages(RHN, e)
+                            pidlist.update(p.get('id') for p in errpkgs)
+                            add_or_update_key(errmaps, e, set('%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errpkgs))
+                        seen.update(pidlist)
+                        errlist.update(clerr)
                     pbar.update(counter + 1)
             print
         # print errlist
