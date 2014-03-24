@@ -81,8 +81,8 @@ try:
     import yaml
     yamlsupport = True
 except ImportError:
-    print "YAML support not available"
-    print "Please install PyYAML if you require this"
+    sys.stderr.write("YAML support not available\n")
+    sys.stderr.write("Please install PyYAML if you require this\n")
     yamlsupport = False
 
 
@@ -133,10 +133,9 @@ def parse_cmdline(argv):
         exitcode(int)       - return code for exit statement.
         """
         if isinstance(errlines, list):
-            print "\n".join(errlines)
+            sys.stderr.write("\n".join(errlines))
         else:
-            print errlines
-        print
+            sys.stderr.write("%s\n" % errlines)
         if usage:
             parser.print_help()
         sys.exit(exitcode)
@@ -272,7 +271,7 @@ def write_csv(data, filename, logger):
             row['destchannels'] = '|'.join(row.get('channels'))
 
         if filename is not sys.stdout:
-            print "writing %d entries to %s" %(len(data), str(filename))
+            sys.stderr.write("writing %d entries to %s\n" %(len(data), str(filename)))
         mywriter = utils.csvReport(data, filename, fields = fields)
         logger.info("wrote %d lines to %s" %(len(data), str(filename)))
         return mywriter
@@ -316,7 +315,7 @@ def dump_mappings(channelmaps, groupname=None):
     fmtstr = "%%(label)-%(label)ds %%(source)-%(source)ds" % maxlen
     if groupname is not None:
         if not channelmaps.has_key(groupname):
-            print "No config found for group %s" % groupname
+            sys.stderr.write("No config found for group %s\n" % groupname)
             return False
         else:
             dump_group(channelmaps, groupname, fmtstr)
@@ -361,14 +360,14 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
     # we're now processing a list of channel mappings, with label and source keys
     # print chanlist
     if len(typelist) > 0:
-        print "types: %r" % typelist
+        sys.stderr.write("Filtering on advisory types: %s\n" % ', '.join( typelist))
     if len(priolist) > 0:
-        print "priorities: %r" % priolist
+        sys.stderr.write("Filtering on advisory priorities: %r\n" % ', '.join(priolist))
     for chanobj in chanlist:
         results = []
         chanlabel = chanobj.get('label')
         chansource = chanobj.get('source')
-        print "processing errata for channel %(label)s (source: %(source)s)" % chanobj
+        sys.stderr.write("processing errata for channel %(label)s (source: %(source)s)\n" % chanobj)
         # errata that are already in our channel:
         chanerrata = channel.listErrata(rhn, chanlabel)
         # this way we can compare keys AND synopses for accuracy
@@ -455,14 +454,14 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
     removed = len(srcerrata) - len(results)
     rhn.logInfo("Removed %d errata, leaving %d to consider" %(removed, len(results)))
 
-    print "%d unsynchronised errata to consider across %d channels" %(len(errindex.keys()), len(chanlist))
+    sys.stderr.write("%d unsynchronised errata to consider across %d channels\n" %(len(errindex.keys()), len(chanlist)))
 
     if newest:
-        print "reducing list to only latest applicable errata"
-        print "doing simplistic reduction by synopsis and date"
+        sys.stderr.write("reducing list to only latest applicable errata\n")
+        sys.stderr.write("doing simplistic reduction by synopsis and date\n")
         reduce_by_synopsis(errindex, rhn.logger)
         rhn.logInfo("reduced list to %d errata by synopsis" % len(errindex.keys()))
-        print "reducing list of errata to latest only, by package comparison"
+        sys.stderr.write("reducing list of errata to latest only, by package comparison\n")
         reduce_by_payload(rhn, errindex)
         rhn.logInfo("reduced list to %d entries by package comparison" % len(errindex.keys()))
 
@@ -562,7 +561,7 @@ def reduce_by_payload(rhn, errindex):
     rhn.logInfo("Processing errata payloads to get latest packages")
     rhn.logInfo("%d errata to consider" % len(errindex))
 
-    print "Processing packages for %d errata. This may be a slow process" % len(errindex)
+    sys.stderr.write("Processing packages for %d errata. This may be a slow process\n" % len(errindex))
 
     widgets = [ "Processing ", Counter(), " Errata" "[",Percentage(),"]", Bar(), Timer() ]
     pbar = ProgressBar(widgets=widgets, maxval=len(errindex), term_width=80).start()
@@ -643,7 +642,7 @@ def advisory_is_newer(advisory1, advisory2):
         else:
             return False
     # we should never get here
-    print "eeek. Out of cheese error!"
+    sys.stderr.write("eeek. Out of cheese error!\n")
     return False
 
 
@@ -826,7 +825,7 @@ def main():
                 if write_csv(results, opts.output, RHN.logger):
                     RHN.logInfo("CSV output successful")
             if opts.group:
-                print "Errata for %s since %s" %(opts.group, monthstart)
+                sys.stderr.write("Errata for %s since %s\n" %(opts.group, monthstart))
             if opts.report:
                 print_report(results, grouplist)
                 sys.exit(0)
@@ -841,7 +840,7 @@ def main():
 
 
     except KeyboardInterrupt:
-        print "Operation cancelled by keystroke."
+        sys.stderr.write("Operation cancelled by keystroke.\n")
         sys.exit(1)
 
 # --------------------------------------------------------------------------------- #
