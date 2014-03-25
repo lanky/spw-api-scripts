@@ -73,8 +73,12 @@ import sys
 import os
 import time
 import csv
+# commandline option parsing
 from optparse import OptionParser, OptionGroup
-from rpmUtils.miscutils import splitFilename, compareEVR
+# for RPM version comparison (to find latest)
+from rpmUtils.miscutils import compareEVR
+# used to sort lists of errata dicts in print_report
+from operator import itemgetter
 
 
 try:
@@ -104,11 +108,9 @@ RHNUSER = None
 RHNPASS = None
 
 # defaults for channel mapping/grouping files.
-CHANNELMAPS = [ 
-                os.path.expanduser('~/.rhn-channels.yaml'), 
-                '/etc/sysconfig/rhn-channels.yaml',
-                os.path.expanduser('~/.rhn-channels.conf'), 
-                '/etc/sysconfig/rhn-channels.conf',
+CHANNELMAPS = [
+                os.path.expanduser('~/.rhnapi/channels.yaml'),
+                '/etc/sysconfig/rhnapi/channels.yaml',
               ]
 
 ERRLEVELS = [ 'Critical', 'Important', 'Moderate', 'Low' ]
@@ -360,14 +362,14 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
     # we're now processing a list of channel mappings, with label and source keys
     # print chanlist
     if len(typelist) > 0:
-        sys.stderr.write("Filtering on advisory types: %s\n" % ', '.join( typelist))
+        sys.stderr.write("  - Filtering on advisory types: %s\n" % ', '.join( typelist))
     if len(priolist) > 0:
-        sys.stderr.write("Filtering on advisory priorities: %r\n" % ', '.join(priolist))
+        sys.stderr.write("  - Filtering on advisory priorities: %r\n" % ', '.join(priolist))
     for chanobj in chanlist:
         results = []
         chanlabel = chanobj.get('label')
         chansource = chanobj.get('source')
-        sys.stderr.write("processing errata for channel %(label)s (source: %(source)s)\n" % chanobj)
+        sys.stderr.write("  - Processing errata for channel %(label)s (source: %(source)s)\n" % chanobj)
         # errata that are already in our channel:
         chanerrata = channel.listErrata(rhn, chanlabel)
         # this way we can compare keys AND synopses for accuracy
@@ -411,8 +413,6 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
                 else:
                     e['priority'] = "None"
 
-                # print e['priority']
-                
                 # remove errata that are not of the chosen type(s)
                 if len(typelist) > 0 and e['advisory_type'].strip() not in typelist:
                     rhn.logDebug("removed %(advisory_name)s [%(advisory_type)s] according to --type selection" % e)
@@ -442,7 +442,7 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
 
         # so far, we have removed
         # already-cloned errata
-        if clonecount != 0:            
+        if clonecount != 0:
             rhn.logInfo("removed %d already-cloned errata" % clonecount)
         # types we don't want
         if typecount != 0 :
@@ -454,16 +454,18 @@ def diff_errata(rhn, chanlist, date, end='', typelist=[], priolist=[], newest=Fa
     removed = len(srcerrata) - len(results)
     rhn.logInfo("Removed %d errata, leaving %d to consider" %(removed, len(results)))
 
-    sys.stderr.write("%d unsynchronised errata to consider across %d channels\n" %(len(errindex.keys()), len(chanlist)))
+    sys.stderr.write("* %d unsynchronised errata to consider across %d channels\n" %(len(errindex.keys()), len(chanlist)))
 
     if newest:
-        sys.stderr.write("reducing list to only latest applicable errata\n")
-        sys.stderr.write("doing simplistic reduction by synopsis and date\n")
+        sys.stderr.write("* Reducing list to only latest applicable errata\n")
+        sys.stderr.write("  - Doing simplistic reduction by synopsis and date: ")
         reduce_by_synopsis(errindex, rhn.logger)
+        sys.stderr.write(" %d remaining\n" % len(errindex.keys()))
         rhn.logInfo("reduced list to %d errata by synopsis" % len(errindex.keys()))
-        sys.stderr.write("reducing list of errata to latest only, by package comparison\n")
+        sys.stderr.write("* Reducing list of errata to latest only, by package comparison\n")
         reduce_by_payload(rhn, errindex)
         rhn.logInfo("reduced list to %d entries by package comparison" % len(errindex.keys()))
+        sys.stderr.write("  - %d applicable errata remaining\n" % len(errindex.keys()))
 
     return errindex.values()
 
@@ -512,7 +514,7 @@ def reduce_by_synopsis(errdict, logger):
 #         else:
 #             syn = synsplit[0].strip()
 #             err['priority']  = "None"
-# 
+#
         # name = err.get('advisory')
         syn = err.get('synopsis')
 
@@ -585,7 +587,7 @@ def reduce_by_payload(rhn, errindex):
 
             # what we'll store if the current pkg is newer:
             pkgrec =  { 'evr' : evr, 'file': p.get('file'), 'erratum' : erratum }
-            
+
             # get any existing record for this namearch pair
             cur = pkgindex.get(namearch)
             if cur is None:
@@ -657,7 +659,7 @@ def print_report(data, chanlist):
             list of dictionary objects, each representing an erratum and the packages
             it affects, categorised by channel.
     """
-    # the keys we are likely to care about 
+    # the keys we are likely to care about
     # (* indicates a custom key, put there by the script)
     # advisory / advisory_name
     # synopsis / advisory_synopsis
@@ -679,7 +681,7 @@ def print_report(data, chanlist):
 
     # so, we need a format str for each erratum
     # basic format.
-    
+
     maxlen = utils.getMaxLen(data)
     if data[0].has_key('chanpkgs'):
         fmtstr = "%%(advisory)-%(advisory)ds | %%(advisory_type)-%(advisory_type)ds | %%(priority)-%(priority)ds | %%(synopsis)-%(synopsis)ds | %%(affected_channels)s" % maxlen
@@ -691,15 +693,15 @@ def print_report(data, chanlist):
         print fmtstr % { 'advisory' : '========', 'advisory_type' : '====', 'priority' : '========', 'synopsis' : '========' }
 
     # print fmtstr
-    for err in data:
+    for err in sorted(data, key=itemgetter('priority', 'advisory','synopsis')):
         if err.has_key('chanpkgs'):
-            affected_channels = []                    
+            affected_channels = []
             for chan, pkglist in err['chanpkgs'].iteritems():
                 label = chandict.get(chan)
                 if label in err['channels']:
                     affected_channels.append("%s(%d)" %( label, len(pkglist) ))
-            err['affected_channels'] = ', '.join(affected_channels)                    
-            
+            err['affected_channels'] = ', '.join(sorted(affected_channels))
+
         print fmtstr % err
 
 # ---------------------------------------------------------------------------- #
@@ -715,15 +717,15 @@ def main():
     opts, args = parse_cmdline(sys.argv[1:])
 
     try:
-        RHN = rhnapi.rhnSession(opts.server, 
-                                opts.login, 
+        RHN = rhnapi.rhnSession(opts.server,
+                                opts.login,
                                 opts.password,
-                                config=opts.config, 
-                                savecreds=opts.cache, 
+                                config=opts.config,
+                                savecreds=opts.cache,
                                 debug=opts.debug,
-                                logfile = opts.logfile, 
+                                logfile = opts.logfile,
                                 logenable = True,
-                                logname = os.path.basename(sys.argv[0]), 
+                                logname = os.path.basename(sys.argv[0]),
                                 loglevel=opts.loglevel,
                                 )
 
@@ -824,9 +826,16 @@ def main():
             if opts.output:
                 if write_csv(results, opts.output, RHN.logger):
                     RHN.logInfo("CSV output successful")
+
+            header = []
             if opts.group:
-                sys.stderr.write("Errata for %s since %s\n" %(opts.group, monthstart))
+                header.append("Errata for %s since %s" %(opts.group, monthstart))
+                if opts.errtypes:
+                    header.append("Types: %s" % ','.join(opts.errtypes))
+                if opts.priorities:
+                    header.append("Priorities: %s" % ','.join(opts.priorities))
             if opts.report:
+                print ' '.join(header)
                 print_report(results, grouplist)
                 sys.exit(0)
             else:
