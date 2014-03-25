@@ -358,7 +358,10 @@ def main():
                     newerr = errata.publishAsOriginal(RHN, err, chanlist)
                     RHN.logInfo("Published erratum %s into channels [ %r ]" %( newerr.get('advisory_name'), chanlist))
                     for chan in chanlist:
-                        newerrata[chan].append(newerr)
+                        if newerrata.has_key(chan):
+                            newerrata[chan].append(newerr)
+                        else:
+                            newerrata[chan] = [ newerr ]
         pprint(newerrata)                        
 
 # --------------------------- REPORT WHAT YOU DID ---------------------------- #
