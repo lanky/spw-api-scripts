@@ -4,6 +4,8 @@
 # RHN/Spacewalk XMLRPC API script
 # ** delete as appropriate below **
 # requires the python-rhnapi and python-progressbar modules
+# also requires PyYAML if you want to use channel grouping
+# for syncing/updating whole builds
 #
 # Copyright 2013 Stuart Sears <stuart.sears@man.com>
 #
@@ -52,6 +54,9 @@ RHNHOST = 'localhost'
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
+
+# channel group configuration, ordered list, last entry wins
+CHANNELMAPS = [ "/etc/sysconfig/rhnapi/channels.yaml", "~/.rhnapi/channels.yaml" ]
 
 
 # --------------------------- Script Configuration --------------------------- #
@@ -103,6 +108,9 @@ def parse_cmdline(argv):
     changrp = OptionGroup(parser, "Channel Selection options")
     changrp.add_option("-s", "--source",
             help="Source Channel for package and errata updates (calculated if missing)")
+    changrp.add_option("-g", "--group","--build", help="Channel group (build) defined in configuration file. Overrides -s, args are assumed to be groups also.")
+    changrp.add_option("--group-file", default=CHANNELMAPS,
+            help="location of group configuration file in YAML format[%default]")
     changrp.add_option("--test", "--report", dest="test", action="store_true", default=False,
             help="Calculate diff and report without making changes")
     changrp.add_option("-o", "--output", help="output file for saving a generated report. Without this it is printed to stdout")
