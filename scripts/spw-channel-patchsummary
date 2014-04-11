@@ -699,7 +699,7 @@ def print_report(data, chanlist):
             for chan, pkglist in err['chanpkgs'].iteritems():
                 label = chandict.get(chan)
                 if label in err['channels']:
-                    affected_channels.append("%s(%d)" %( label, len(pkglist) ))
+                    affected_channels.append("%s (%d)" %( label, len(pkglist) ))
             err['affected_channels'] = ', '.join(sorted(affected_channels))
 
         print fmtstr % err
@@ -743,7 +743,8 @@ def main():
             enddate = "%s 00:00:00" % opts.end
             RHN.logInfo("Using end date provided on commandline (%s)" % enddate)
         else:
-            enddate = "%s 00:00:00" % time.strftime("%Y-%m-%d")
+            # default to the very end of today
+            enddate = "%s 23:59:59" % time.strftime("%Y-%m-%d")
             RHN.logInfo("No end date provided, using %s " % enddate)
 
         # Default value for sanity
