@@ -43,6 +43,7 @@ __author__ = "Stuart Sears <stuart@sjsears.com>"
 import sys
 import os
 import time
+import re
 from fnmatch import fnmatch
 from optparse import OptionParser, OptionGroup
 from pprint import pprint
@@ -134,6 +135,7 @@ def get_ks_details(rhn, ksobject, verbose = False):
     """
     rhn.logInfo("Processing Kickstart Profile %(label)s" % ksobject)
     kslabel = ksobject.get('label')
+    kscontents = kickstart.downloadRenderedKickstart(rhn, kslabel)
     rhn.logDebug("* child channel subscriptions")
     ksobject['child_channels']        = kickstart.getChildChannels(rhn, kslabel)
     rhn.logDebug("* advanced options")
@@ -184,6 +186,13 @@ def get_ks_details(rhn, ksobject, verbose = False):
     ksobject['remote_cmds']           = kickstart.checkRemoteCommands(rhn, kslabel)
     # so, there's a setLogging, but not a getLogging equivalent. huh?
     # ksobject['logging']               = kickstart.getLogging(rhn, kslabel)
+    ksobject['log_pre'] = False
+    ksobject['log_post'] = False
+    if re.search("pre --log", kscontents):
+        ksobject['log_pre'] = True
+
+    if re.search("%post.*--log", kscontents):
+        ksobject["log_post"] = True
     
     # group ids will not be the same on all servers, so we need their names too:
     # this needs updating to add kickstart snippets too
