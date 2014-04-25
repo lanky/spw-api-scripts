@@ -23,19 +23,29 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
-"""
-Simply prints out important details from a chosen erratum
-"""
 __author__ = "Stuart Sears <stuart.sears@man.com>"
 
+scriptname = "spw-errata-details"
+
+"""
+%s
+Prints out important details for selected errata, including
+* summary
+* package list
+* which channels it's already in
+* which (cloned) channels it applies to
+""" % scriptname
 # --------------------- Python Standard Library Modules ---------------------- #
 import os
 import sys
 from optparse import OptionParser, OptionGroup
+# just while debugging
+from pprint import pprint
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import errata
+from rhnapi import channel
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -83,6 +93,13 @@ def parse_cmdline(argv):
     errgrp = OptionGroup(parser, "Output options")
     errgrp.add_option("-s", "--summary", action="store_true", default=False,
         help="Show a brief summary of the erratum, not all details")
+    errgrp.add_option("-c", "--channels", action="store_true", default=False,
+        help="Show a list of channels containing each erratum")
+    errgrp.add_option("-a", "--applicable-channels", dest="applicable", 
+        action="store_true", default=False,
+        help="Show a list of channels each erratum could be applied to")
+    errgrp.add_option("-p", "--packages", action="store_true", default=False,
+        help="List packages provided by each erratum (grouped by channel)")
     parser.add_option_group(errgrp)
 
 
@@ -93,9 +110,50 @@ def parse_cmdline(argv):
 
     opts, args = parser.parse_args(argv)
     # check the args for errors etc...
+    # --channels and --packages imply --summary
+    # why ?
+    if opts.channels or opts.packages or opts.applicable:
+        opts.summary = True
+    if not opts.summary:
+        opts.applicable = True
+
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
 
     # finally...
     return opts, args
+
+# ---------------------------------------------------------------------------- #
+
+def get_clones(rhn):
+    """
+    Returns a list of all cloned channels on the satellite and their sources
+    { label : set([ list of clones of label ]) }
+    """
+    # we really only require a list of custom channels - RH channels are never clones
+    rhn.logInfo("Fetching a list of software channels")
+    chanlist = channel.listSoftwareChannels(rhn)
+    rhn.logInfo("Getting detailed info about channels")
+    clonedict = {}
+    for chan in chanlist:
+        rhn.logDebug("Fetching info for channel %(label)s" % chan)
+        chaninfo = channel.getDetails(rhn, chan.get('label'))
+
+        if chaninfo:
+            chan.update(chaninfo)
+
+        source = chan.get('clone_original', '').strip()
+        if len(source) != 0:
+            if clonedict.has_key(source):
+                clonedict[source].add(chan['label'])
+            else:
+                clonedict[source] = set([chan['label']])
+
+    return clonedict
         
 # ---------------------------------------------------------------------------- #
 
@@ -113,52 +171,154 @@ def main():
     # safety mechanism until the script actually works:
     try:
         RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
-                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
-                                logfile = opts.logfile, logenable = True,
-                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                config=opts.config, 
+                                savecreds=opts.cache, 
+                                debug=opts.debug,
+                                logfile = opts.logfile, 
+                                logenable = True,
+                                logname = scriptname,
+                                loglevel=opts.loglevel,
                                 )
-        # did we give the --verbose switch?
-        if opts.verbose:
-            RHN.enableVerbose()
+        # this slows us down, so we don't do it unless we have to:
+        if opts.applicable:
+            print "* mapping cloned channels on your satellite"
+            channelclones = get_clones(RHN)
 
-        # debug dials up the logging some more
-        if opts.debug:
-            RHN.enableDebug()
         errlist = []
         sumstr = '%(advisory)-16s %(topic)s'
+        clonedict = {}
+        # just to map channels to lists of advisories
+        errdict = {}
         for erratum in args:
+            print "* fetching details for erratum %s" % erratum
             RHN.logDebug("Fetching Package list for %s" % erratum)
             errinfo = errata.getDetails(RHN, erratum)
             if errinfo:
                 errinfo['advisory'] = erratum
-                errinfo['packages'] = '\n'.join([ "%(file)s" % pkg for pkg in  errata.listPackages(RHN, erratum)])
-#                errinfo['topic'] = errinfo['topic'].replace('\n', '\n                 ')
+                errinfo['packages'] = {}
+                for pkg in errata.listPackages(RHN, erratum):
+                    for chan in pkg['providing_channels']:
+                        # let's find out if this erratum is actually all the specified channels
+                        if not errdict.has_key(chan):
+                            errdict[chan] = set([e.get('advisory') for e in channel.listErrata(RHN, chan)])
+                        if erratum not in errdict[chan]:
+                            RHN.logDebug("Erratum %s is not in channel %s, ignoring it" % (erratum, chan))
+                            # then we skip it.
+                            # This will skip RH channels if we are working with a cloned erratum
+                            # and cloned channels if we are working with an RH erratum
+                            continue
+
+                        if errinfo['packages'].has_key(chan):
+                            errinfo['packages'][chan].append(pkg['file'])
+                        else:
+                            errinfo['packages'][chan] = [ pkg['file'] ]
+
+                # at this point the erratum object has a list of packages by channel
+                # for the channels it is already in. 
+                # if we want a list of applicable channels too, we have more work to do.
+                if opts.applicable:
+                    errinfo['applicable_channels'] = {}
+                    # let's add in the applicable channels too.
+                    # this will return an empty set if we aren't working with a cloned channel
+                    for chan, pkglist in errinfo['packages'].iteritems():
+                        clones = channelclones.get(chan, set())
+                        for clone in clones:
+                            # if we already have this, it doesn't count! :)
+                            if clone in errinfo['packages'].keys():
+                                continue
+                            else:
+                                # link the cloned channel to the same package list as its source
+                                errinfo['applicable_channels'][clone] = pkglist
+
                 errlist.append(errinfo)
 
         if len(errlist) == 0:
             RHN.logError("No valid errata names found")
             sys.exit(2)
         
-        # print errlist
-        if opts.summary:
-            print sumstr % { 'advisory' : 'Advisory', 'topic' : 'Topic' }
-            print sumstr % { 'advisory': '========', 'topic' : '=====' }
-            for e in errlist:
-                e['topic'] = e['topic'].replace('\n', '\n                 ')
-                print sumstr % e
-        else:
-            for e in errlist:
-                print "Advisory: %s" % erratum
-                print "TOPIC"
+        for err in errlist:
+            if opts.summary:
+                print sumstr % { 'advisory' : 'Advisory', 'topic' : 'Topic' }
+                print sumstr % { 'advisory': '========', 'topic' : '=====' }
+                err['topic'] = err['topic'].replace('\n', '\n                 ')
+                print sumstr % err
+                onlypkgs = False
+                if opts.channels:
+                    print
+                    print "Packages and Providing Channels"
+                    print "------------------------------"
+                    print "This erratum has been added to (or comes from) the following channels"
+                    if opts.packages:
+                        onlypkgs = False
+                        print "and provides the packages listed\n"
+                        for chan, pkgs in err.get('packages').iteritems():
+                            print "[%s]" % chan
+                            print "\n".join(pkgs)
+                            print
+                    else:
+                        onlypkgs = True
+                        for chan, pkgs in err.get('packages').iteritems():
+                            print "%s (%d)" %(chan, len(pkgs))
+
+                if opts.applicable: 
+                    print
+                    print "Applicable Channels and Packages"
+                    print "--------------------------------"
+                    print "This erratum applies to the following channels (and any of their clones)"
+                    if opts.packages:
+                        onlypkgs = False
+                        print "and would add the packages listed\n"
+                        for chan, pkgs in err.get('applicable_channels').iteritems():
+                            print "[%s]" % chan
+                            print "\n".join(pkgs)
+                            print
+                    else:
+                        onlypkgs = True
+                        for chan, pkgs in err.get('applicable_channels').iteritems():
+                            print "%s (%d)" %(chan, len(pkgs))
+
+                # we asked for a package list and we haven't already provided it above
+                if opts.packages and onlypkgs:
+                    print
+                    # list packages by channel
+                    print "Packages"
+                    print "--------"
+                    for chan, pkgs in err['packages'].iteritems():
+                        print "\n".join(pkgs)
+
+            else:
+                print "Advisory: %(advisory)s" % err
+                print "Topic"
                 print "---------------"
-                print errinfo['topic'].lstrip()
-                print "DESCRIPTION"
-                print "---------------"
-                print errinfo['description'].lstrip()
-                print "PACKAGES"
-                print "---------------"
-                print errinfo['packages']
-            print "=====================\n"
+                print err['topic'].lstrip()
+                print
+                print "Description"
+                print "-----------"
+                print err['description'].lstrip()
+                print
+                print "Packages By Providing Channel"
+                print "------------------------------"
+                print "This erratum has been added to (or comes from) the following channels"
+                print "and provides the packages listed\n"
+
+                for chan, pkgs in err.get('packages').iteritems():
+                    print "[%s]" % chan
+                    print "\n".join(pkgs)
+                    print
+                print
+                print "Applicable Channels and Packages"
+                print "--------------------------------"
+                print "This erratum applies to the following channels"
+                print "and would add the packages listed\n"
+                for chan, pkgs in err.get('applicable_channels').iteritems():
+                    print "[%s]" % chan
+                    print "\n".join(pkgs)
+                    print
+            print
+
+
+
+
 
     except KeyboardInterrupt:
         print "Operation cancelled by keystroke."
