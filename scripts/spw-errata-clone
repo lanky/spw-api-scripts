@@ -366,9 +366,9 @@ def main():
 
 # --------------------------- REPORT WHAT YOU DID ---------------------------- #
         print "Cloned/Published errata as follows:"
-        fmtstr = "%%-%ds\n--\n%%s" % max(len(c) for c in newerrata.keys())
+        fmtstr = "%%-%ds:\n%%s" % max(len(c) for c in newerrata.keys())
         for chan, errlist in newerrata.iteritems():
-            print fmtstr % (chan, ','.join(set(e.get('advisory_name')) for e in errlist))
+            print fmtstr % (chan, ','.join(set(e.get('advisory_name') for e in errlist)))
         
 
 
