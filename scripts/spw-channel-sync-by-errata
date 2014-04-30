@@ -152,7 +152,7 @@ def parse_cmdline(argv):
         opts.loglevel = 30
     # finally...
 
-    if opts.report and not opts.Test:
+    if opts.report and not opts.test:
         opts.test = True
 
     if not has_yaml:
