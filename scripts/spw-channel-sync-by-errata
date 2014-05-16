@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# ** delete as appropriate below **
 # requires the python-rhnapi and python-progressbar modules
 # also requires PyYAML if you want to use channel grouping
 # for syncing/updating whole builds
@@ -13,7 +12,7 @@
 #
 # spw-api-scripts is free software: you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free
-# Software Foundation, either version 2 of the License, or (at your option)
+# Software Foundation, either version 3 of the License, or (at your option)
 # any later version.
 #
 # spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
@@ -31,6 +30,7 @@ import sys
 import re
 from optparse import OptionParser, OptionGroup
 from operator import itemgetter
+from fnmatch import fnmatch
 
 # --------------------------- Non-Standard modules --------------------------- #
 try:
@@ -39,18 +39,16 @@ try:
 except ImportError:
     has_yaml = False
 
-
-
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import channel, errata, packages
-from rhnapi import utils
 
 from progressbar import Counter, Percentage, ProgressBar, Timer, Bar
 # ------------------------- Docstring and file info -------------------------- #
-__doc__ = """
+"""
 %s
-Synchronises two channels via errata cloning/publishing and package pushing
+Synchronises two channels via errata cloning/publishing and package pushing.
+Fully supports channel grouping via  a YAML configuration file (requires PyYAML)
 """ % os.path.basename(__file__)
 __author__ = "Stuart Sears <stuart.sears@man.com>"
 
@@ -66,13 +64,13 @@ RHNUSER = None
 RHNPASS = None
 
 # channel group configuration, ordered list, last entry wins
-CHANNELMAPS = [ "/etc/sysconfig/rhnapi/channels.yaml", "~/.rhnapi/channels.yaml" ]
+CHANNELMAPS = "~/.rhnapi/channels.yaml"
 
 
 # --------------------------- Script Configuration --------------------------- #
 # put global variables for the script in here
 
-rhpatt = re.compile('^RH[BES]A-\d{4}:\d{4}(?:-\d)?')
+RHPATT = re.compile('^RH[BES]A-\d{4}:\d{4}(?:-\d)?')
 # we use this repeatedly, so define it globally
 pkgfmt = "%(name)s-%(version)s-%(release)s.%(arch_label)s"
 
@@ -135,9 +133,9 @@ def parse_cmdline(argv):
         buildgrp.add_option("-g", "--group", "--build", dest="group", 
             help="Channel group (build) defined in configuration file. Overrides -s, args are ignored")
         buildgrp.add_option("--group-file", action="append", default=CHANNELMAPS, 
-            help="location of group configuration file in YAML format[%default]")
+            help="location of group configuration file in YAML format. Default: %default")
         buildgrp.add_option("--list-groups", action="store_true", default=False,
-            help="List defined groups and exit")
+            help="List defined groups (or a shell wildcard pattern specified as an argument) and exit")
         parser.add_option_group(buildgrp)
 
     # by default
@@ -178,7 +176,7 @@ def parse_cmdline(argv):
             error(["ERROR: No destination channels to sync from source channel %s" % opts.source], True, 1)
     # finally, we have no 'group' or 'source', but we do have destination channels.
     else:
-        if len(args) > 0:
+        if len(args) > 0 and not opts.list_groups:
             print "No source channel provided, will work it out based on channel cloning"
     opts.latest = not (opts.all)
 
@@ -218,8 +216,6 @@ def gen_report(channelmaps):
         if len(errlist) > 0:
             errlen = max([ len(k[0]) for k in errlist])
             errfmt =  "%%-%ds %%s" % errlen
-#            outlines.append( errfmt % { 'advisory' : "Erratum", 'synopsis' : "Synopsis" })
-#            outlines.append( errfmt % { 'advisory' : "=".ljust(errlen,"="), 'synopsis' :"========"})
             for err in sorted(errlist, key=itemgetter(0), reverse=True):
                 outlines.append((errfmt % err).strip())
 
@@ -228,8 +224,6 @@ def gen_report(channelmaps):
         if len(pkgdict.keys()) > 0:
             pkglen = max(len(k) for k in pkgdict.keys())
             pkgrepfmt =  "%%(nvrea)-%ds %%(summary)s" % pkglen
-#            outlines.append( pkgfmt % {'nvrea' : "Package", 'summary' : "Summary"} )
-#            outlines.append( pkgfmt % { 'nvrea' : "=".ljust(pkglen,"="), 'summary' : "======="})
             for pkg in sorted(pkgdict.values(), key=itemgetter('nvrea')):
                 try:
                     outlines.append((pkgrepfmt % pkg).strip())
@@ -318,19 +312,22 @@ def get_group(groupname, groupdata):
 
 # ---------------------------------------------------------------------------- #
 
-def list_groups(groupdata, padding=30):
+def list_groups(groupdata, grouppattern=None, padding=30):
     """
     pretty-prints the groups from our merged configuration
     """
     fmt = "%%(label)-%ds %%(source)s" % padding
     for grp, props in groupdata.iteritems():
-        print "Group: %s - %s" %  (grp, props.get('description', ''))
-        print fmt % {'label' : "Channel Label", 'source' : "Cloned From"}
-        print fmt % {'label' : "=============", 'source' : "==========="}
-        print fmt % props, " (base)"
-        for child in props.get('children'):
-            print fmt % child
-        print "--"
+        if grouppattern and not fnmatch(grp, grouppattern):
+                continue
+        else:
+            print "Group: %s - %s" %  (grp, props.get('description', ''))
+            print fmt % {'label' : "Channel Label", 'source' : "Cloned From"}
+            print fmt % {'label' : "=============", 'source' : "==========="}
+            print fmt % props, " (base)"
+            for child in props.get('children'):
+                print fmt % child
+            print "--"
 
 # ---------------------------------------------------------------------------- #
 
@@ -395,7 +392,7 @@ def package_diff(rhn, chan1, chan2, latestonly=False, pkgs1=None):
 
     pkgs2 = channel.listAllPackages(rhn, chan2)
     pkgnames2 = set(get_pkgstr(p) for p in pkgs2)
-    print "  - %d packages in %s" %(len(pkgs2), chan2)
+    print "  - %d packages in %s" % (len(pkgs2), chan2)
 
     rhn.logDebug("Got %d packages in channel %s" %(len(pkgs2), chan2))
     ldiff = pkgnames1.difference(pkgnames2)
@@ -494,7 +491,7 @@ def find_errata_packages(rhn, sourcechannel, errset, pkgset):
     extrapkgs = set()
     pkginfo = []
     print "  - Finding packages for %d errata in %s"  % ( len(errset), sourcechannel)
-    errwidgets = [ "Errata: ", Counter(format="%4d"), "/%4d " % len(errset), Bar(), Timer() ]
+    errwidgets = [ "Errata: ", Counter(format="%4d"), "/%-4d " % len(errset), Bar(), Timer() ]
     pbar = ProgressBar(widgets=errwidgets, maxval=len(errset), term_width=80).start()
     for idx, errinfo in enumerate(errset):
         errname = errinfo[0]
@@ -552,10 +549,15 @@ def main(argv):
                                 loglevel=opts.loglevel,
                                 )
 
-        # this doesn't require RHN at all...
         if opts.list_groups:
-            groupdata = load_groupfiles(opts.group_file, RHN.logger)
-            list_groups(groupdata)
+            groupdata = load_groupfiles( [ opts.group_file ], RHN.logger)
+            if len(args) > 0 :
+                for arg in args:
+                    print "listing groups matching %s" % arg
+                    list_groups(groupdata, grouppattern=arg)
+            else:
+                list_groups(groupdata)  
+
             sys.exit(0)
 
 
@@ -565,7 +567,7 @@ def main(argv):
             multisource = True
             # returns list of dict: { 'label' : channel_label, 'source' : channel_source }
             RHN.logDebug("fetching group info for group %s" % opts.group)
-            groupdata = load_groupfiles(opts.group_file, RHN.logger)
+            groupdata = load_groupfiles( [opts.group_file], RHN.logger)
             channelmaps = get_group(opts.group, groupdata)
             # not sure what I wanted this one for!
             if channelmaps is None:
@@ -651,7 +653,7 @@ def main(argv):
             else:
                 allsrcidx = srcidx
 
-            print "  - %d packages in %s to process" %(len(pkgdiff), srcchan)
+            print "  - %d packages in %s to process" % (len(pkgdiff), srcchan)
 
             # log the number of packages we need to inspect
             RHN.logDebug("%d packages in %s but not in %s" %(len(pkgdiff), srcchan, dstchan))
@@ -707,11 +709,11 @@ def main(argv):
                 pbar.finish()
 
             # now process the additional packages if we have any to make sure they aren't already synced
+            RHN.logDebug("Excluding already-synced packages")
+            additionalpkgs.difference_update(dstpkgs)
+            RHN.logDebug("%d extra packages will be synced via errata" % len(additionalpkgs))
             extra_package_index = {}
             if len(additionalpkgs) > 0:
-                RHN.logDebug("Excluding already-synced packages")
-                additionalpkgs.difference_update(dstpkgs)
-                RHN.logDebug("%d extra packages will be synced via errata" % len(additionalpkgs))
                 for epkg in additionalpkgs:
                     RHN.logDebug("Additional pkg: %s" % epkg)
                 print "processing %d extra packages" % len(additionalpkgs)
@@ -749,22 +751,23 @@ def main(argv):
                 reportlines = gen_report(channelmaps)
                 if opts.output:
                     try:
-                        RHN.logInfo("outputting report to %s" % opts.output)
-                        fd = open(opts.output, 'wb')
-                        if opts.group:
-                            fd.write("Channel Group: %s\n" % opts.group)
-                        fd.write('\n'.join(reportlines))
-                        sys.exit(0)
-                    except OSError, E:
-                        RHN.logError("Unable to create/write to output file %s" % opts.output)
-                        RHN.logError("Error was: %s" % E.strerror)
-                        print "Failed to create %s - %s" % (opts.output, E.strerror)
-                        sys.exit(255)
-                    except IOError, E:
-                        RHN.logError("Unable to create/write to output file %s" % opts.output)
-                        RHN.logError("Error was: %s" % E.strerror)
-                        print "Failed to create %s - %s" %(opts.output, E.strerror)
-                        sys.exit(255)
+                        try:
+                            RHN.logInfo("outputting report to %s" % opts.output)
+                            fd = open(opts.output, 'wb')
+                            if opts.group:
+                                fd.write("Channel Group: %s\n" % opts.group)
+                            fd.write('\n'.join(reportlines))
+                            sys.exit(0)
+                        except OSError, E:
+                            RHN.logError("Unable to create/write to output file %s" % opts.output)
+                            RHN.logError("Error was: %s" % E.strerror)
+                            print "Failed to create %s - %s" % (opts.output, E.strerror)
+                            sys.exit(255)
+                        except IOError, E:
+                            RHN.logError("Unable to create/write to output file %s" % opts.output)
+                            RHN.logError("Error was: %s" % E.strerror)
+                            print "Failed to create %s - %s" % (opts.output, E.strerror)
+                            sys.exit(255)
                         
                     finally:
                         print "writing output to %s" % opts.output
@@ -782,12 +785,12 @@ def main(argv):
                     errata_count = len(chanmap['errata_to_sync'])
                     
 
-                    print "%s => %s" %(source, dest)
-                    print "%s====%s" %( "=".ljust(len(source),"="), "=".ljust(len(dest),"=") )
+                    print "%s => %s" % (source, dest)
+                    print "%s====%s" % ( "=".ljust(len(source),"="), "=".ljust(len(dest),"=") )
                     print "Packages to sync:     %4d" % chanmap.get('package_sync_count', 0)
                     print "Errata to sync:       %4d" % errata_count
                     print "Packages from Errata: %4d" % errata_pkg_count
-                    print "Non-Errata Packages:  %4d" % len(chanmap.get('non_errata_pkgs',[]))
+                    print "Non-Errata Packages:  %4d" % len(chanmap.get('non_errata_pkgs', []))
                     print "Additional Packages:  %4d" % len(chanmap.get('extra_package_index', []))
                 sys.exit(0)
 
@@ -802,14 +805,13 @@ def main(argv):
                 erratalist = chanmap.get('errata_to_sync', [])
                 packagelist = chanmap.get('non_errata_pkgs', [])
                 destchannel = chanmap.get('label')
-                sourcechannel = chanmap.get('source')
-                print "*  synchronising %s from " % destchannel
+                print "*  synchronising %(label)s from %(source)s" % chanmap
                 if len(erratalist) > 0:
                     # we have errata for syncing
                     cloneme = []
                     publishme = []
                     for err in erratalist:
-                        if rhpatt.match(err[0]):
+                        if RHPATT.match(err[0]):
                             cloneme.append(err)
                         else:
                             publishme.append(err)
