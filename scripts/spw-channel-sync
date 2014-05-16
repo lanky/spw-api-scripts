@@ -140,16 +140,15 @@ def main(argv):
             RHN.enableDebug()
 
         # get a list of packages we could sync:
-        if opts.packages:
-            namelist = opts.packages.split(',')
-            chanpackages = channel.listAllPackages(RHN, opts.source)
-            packagelist = []
-            for n in namelist:
-                packagelist.extend([ x for x in chanpackages if fnmatch(x['name'], n)])
-        elif opts.latest:
+        if opts.latest:
             packagelist = channel.listLatestPackages(RHN, opts.source)
         else:            
             packagelist = channel.listAllPackages(RHN, opts.source)
+
+        if opts.packages:
+            namelist = opts.packages.split(',')
+            packagelist = [ p for p in packagelist if any(fnmatch(p.get('name'), n) for n in namelist)]
+
         for chan in chanlist:
             # just as a default for this channel
             sync = True
