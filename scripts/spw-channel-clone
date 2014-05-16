@@ -449,7 +449,7 @@ def main():
             else:
                 # if one of the child channels fails, we try all the others anyway
                 RHN.logErr("Failed to clone channel %(label)s." % chanobj)
-                print "Error cloning channel %s"
+                print "Error cloning channel %(label)s"  % chanobj
                 continue
 
     except KeyboardInterrupt:
