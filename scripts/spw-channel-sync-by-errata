@@ -38,15 +38,15 @@ try:
     has_yaml = True
 except ImportError:
     has_yaml = False
-    pass
 
 
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
 from rhnapi import channel, errata, packages
+from rhnapi import utils
 
-from progressbar import Counter,Percentage,ProgressBar,Timer,Bar
+from progressbar import Counter, Percentage, ProgressBar, Timer, Bar
 # ------------------------- Docstring and file info -------------------------- #
 __doc__ = """
 %s
@@ -91,7 +91,8 @@ def parse_cmdline(argv):
         exitcode(int)       - return code for exit statement.
         """
         print "\n".join(errlines)
-        parser.print_help()
+        if usage:
+            parser.print_help()
         sys.exit(exitcode)
 
     preamble = """Update one channel from another, using errata where possible"""
@@ -107,7 +108,7 @@ def parse_cmdline(argv):
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
-    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--server", help="RHN satellite server hostname [%default]", default=RHNHOST)
     rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
     rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
@@ -124,12 +125,14 @@ def parse_cmdline(argv):
         help="Generate a report without making changes")
     changrp.add_option("--test", action="store_true", default=False,
         help="Run comparisons and show a brief summary, but make no changes")
+    changrp.add_option("--all", action="store_true", default=False,
+        help="Process ALL packages in SOURCE and DESTCHANNEL, not just the latest ones.")
     changrp.add_option("-o", "--output", help="output file for saving a generated report. Without this it is printed to stdout")
     parser.add_option_group(changrp)
     
     if has_yaml:
         buildgrp = OptionGroup(parser, "Channel Group / Build options")
-        buildgrp.add_option("-g", "--group","--build", dest="group", 
+        buildgrp.add_option("-g", "--group", "--build", dest="group", 
             help="Channel group (build) defined in configuration file. Overrides -s, args are ignored")
         buildgrp.add_option("--group-file", action="append", default=CHANNELMAPS, 
             help="location of group configuration file in YAML format[%default]")
@@ -177,6 +180,7 @@ def parse_cmdline(argv):
     else:
         if len(args) > 0:
             print "No source channel provided, will work it out based on channel cloning"
+    opts.latest = not (opts.all)
 
     return opts, args
 
@@ -199,33 +203,50 @@ def gen_report(channelmaps):
 
     for chandata in channelmaps:
         # because I use this repeatedly, avoid repeated dict lookups
-        errdict = chandata['errindex']
-        pkgdict = chandata['pkgindex']
+        errlist = chandata['errata_to_sync']
+        pkgdict = chandata['package_index']
+        extrapkgs = chandata['extra_package_index']
         # this is being removed
-        errheader = "Errata to sync from %%(source)s: %d" % len(errdict.keys())
+        errheader = "Errata to sync from %%(source)s: %d" % len(errlist)
         pkgheader = "Non-errata packages to sync from %%(source)s: %d" % len(pkgdict.keys())
+        extraheader = "Additional packages pulled in by errata from %%(source)s: %d" % len(extrapkgs.keys())
 
         outlines.append("Channel: %(label)s" % chandata)
         outlines.append("%s" % ("-".ljust(len(chandata.get('label')) + 9, '-')))
         outlines.append(errheader % chandata)
         # do errata reporting if there are any to sync
-        if len(errdict.keys()) > 0:
-            errlen = max(len(k) for k in errdict.keys()) 
-            errfmt =  "%%(advisory)-%ds %%(synopsis)s" % errlen
+        if len(errlist) > 0:
+            errlen = max([ len(k[0]) for k in errlist])
+            errfmt =  "%%-%ds %%s" % errlen
 #            outlines.append( errfmt % { 'advisory' : "Erratum", 'synopsis' : "Synopsis" })
 #            outlines.append( errfmt % { 'advisory' : "=".ljust(errlen,"="), 'synopsis' :"========"})
-            for err in sorted(errdict.values(), key=itemgetter('advisory')):
+            for err in sorted(errlist, key=itemgetter(0), reverse=True):
                 outlines.append((errfmt % err).strip())
 
         outlines.append("")
         outlines.append(pkgheader % chandata)
         if len(pkgdict.keys()) > 0:
             pkglen = max(len(k) for k in pkgdict.keys())
-            pkgfmt =  "%%(nvrea)-%ds %%(summary)s" % pkglen
+            pkgrepfmt =  "%%(nvrea)-%ds %%(summary)s" % pkglen
 #            outlines.append( pkgfmt % {'nvrea' : "Package", 'summary' : "Summary"} )
 #            outlines.append( pkgfmt % { 'nvrea' : "=".ljust(pkglen,"="), 'summary' : "======="})
             for pkg in sorted(pkgdict.values(), key=itemgetter('nvrea')):
-                outlines.append((pkgfmt % pkg).strip())
+                try:
+                    outlines.append((pkgrepfmt % pkg).strip())
+                except:
+                    print pkg
+
+        outlines.append("")
+        outlines.append(extraheader % chandata)
+        if len(extrapkgs.keys()) > 0:
+            pkglen = max(len(k) for k in extrapkgs.keys())
+            pkgrepfmt =  "%%(nvrea)-%ds %%(summary)s" % pkglen
+            for pkg in sorted(extrapkgs.values(), key=itemgetter('nvrea')):
+                try:
+                    outlines.append((pkgrepfmt % pkg).strip())
+                except:
+                    print pkg
+
 
         outlines.append("")
 
@@ -266,7 +287,7 @@ def load_groupfiles(groupfilelist, logger=None):
 
 # ---------------------------------------------------------------------------- #
 
-def get_group(groupname,groupdata):
+def get_group(groupname, groupdata):
     """
     extract the chosen channel group from the YAML-format mapping file
     in this format:
@@ -313,6 +334,203 @@ def list_groups(groupdata, padding=30):
 
 # ---------------------------------------------------------------------------- #
 
+def get_pkgstr(pkgobj):
+    """
+    get an E:NVR.A string for the given package object
+    """
+    fragments = [ "%(name)s-%(version)s-%(release)s" ]
+    epoch = pkgobj.get('epoch', '').strip()
+    if len(epoch) != 0:
+        fragments.insert(0, "%(epoch)s:")
+    if pkgobj.get('arch_label', False):
+        fragments.append(".%(arch_label)s")
+    else:
+        fragments.append(".%(arch)s")
+
+    return ''.join(fragments) % pkgobj
+
+# ---------------------------------------------------------------------------- #
+
+def get_errid(errobj):
+    """
+    returns the YYYY:NNNN part for an erratum
+    """
+    adv = errobj.get('advisory')
+    # advisories are 'RHSA-YYYY:NNNN-N', we want the middle bit.
+    return adv.split('-')[1].strip()
+
+# ---------------------------------------------------------------------------- #
+
+def package_diff(rhn, chan1, chan2, latestonly=False, pkgs1=None):
+    """
+    does a one-way diff of packages from chan1 to chan2
+    parameters:
+        rhn(rhnapi.rhnSession): authenticated rhn session object
+        chan1(string): source channel
+        chan2(string): destination channel to compare with source
+        latestonly(bool): only compare latest pkgs in source channel
+        pkgs1(list/dict): output of channel.list(All|Latest)Packages
+            for chan1, use this when comparing the same source against
+            multiple destination channels, to avoid repeating the same
+            api call for every one
+    returns:
+        pkgindex1: dict, NVREA: pkgobj for all/latest pkgs in chan1
+        pkgdiff: set of NVREA - keys from pkgindex1 not in chan2
+    """
+    rhn.logInfo("Diffing package lists for %s and %s" %(chan1, chan2))
+    if pkgs1 is not None:
+        print "  - %d packages in %s" % (len(pkgs1), chan1)
+    elif latestonly:
+        pkgs1 = channel.listLatestPackages(rhn, chan1)
+        print "  - %d packages in %s (latest only)" % ( len(pkgs1), chan1)
+    else:
+        pkgs1 = channel.listAllPackages(rhn, chan1)
+        print "  - %d packages in %s" % ( len(pkgs1), chan1)
+    
+
+    pkgindex1 = dict(zip((get_pkgstr(p) for p in pkgs1), pkgs1))
+    pkgnames1 = set(pkgindex1.keys())
+
+    rhn.logDebug("Got %d packages in channel %s" %(len(pkgs1), chan1))
+
+    pkgs2 = channel.listAllPackages(rhn, chan2)
+    pkgnames2 = set(get_pkgstr(p) for p in pkgs2)
+    print "  - %d packages in %s" %(len(pkgs2), chan2)
+
+    rhn.logDebug("Got %d packages in channel %s" %(len(pkgs2), chan2))
+    ldiff = pkgnames1.difference(pkgnames2)
+    rhn.logDebug("Found %d packages in %s but not %s" %(len(ldiff), chan1, chan2))
+
+    
+    # return the package objects and the 
+    return pkgindex1, ldiff, pkgnames2
+
+# ---------------------------------------------------------------------------- #
+
+def errata_diff(rhn, chan1, chan2, errlist1=None):
+    """
+    Generate an errata diff between 2 channels
+    errata are considered identical if
+    1) their advisory names are identical
+    OR
+    2) their ERRID (the YYYY:NNNN) parts are identical AND their 'synopses' are identical
+       - this should identify clones of existing errata
+
+    when you want to diff the same channel against multiple destinations, pass the 
+    errlist1 parameter, which should be the output of channel.listErrata for your
+    common source channel
+    """
+    if errlist1 is None:
+        errlist1 = channel.listErrata(rhn, chan1)
+    
+    print "  - %d errata in %s" % (len(errlist1), chan1)
+    advindex1 = dict(zip((e.get('advisory') for e in errlist1), errlist1))
+
+    errlist2 = channel.listErrata(rhn, chan2)
+    advindex2 = dict(zip((e.get('advisory') for e in errlist2), errlist2))
+    print "  - %d errata in %s" % (len(errlist2), chan2)
+
+    # these are sets of advisories
+    adv1 = set(advindex1.keys())
+    rhn.logDebug("%d errata in channel %s" %(len(adv1), chan1))
+    adv2 = set(advindex2.keys())
+    rhn.logDebug("%d errata in channel %s" %(len(adv2), chan2))
+
+    # advisories in chan1 not in chan2
+    ldiff = adv1.difference(adv2)
+    rhn.logDebug("%d advisories in %s but not %s (naive comparison)" %(len(ldiff), chan1, chan2))
+    # advisories in chan2 but not chan1
+    rdiff = adv2.difference(adv1)
+    rhn.logDebug("%d advisories in %s but not %s (naive comparison)" %(len(rdiff), chan2, chan1))
+
+    # but what if they're clones?
+    # index on errid, mapping the YYYY:NNNN parts to their original dicts
+    idindex1 = dict(zip((get_errid(e) for e in errlist1 if e.get('advisory') in ldiff), errlist1))
+    idindex2 = dict(zip((get_errid(e) for e in errlist2 if e.get('advisory') in ldiff), errlist2))
+
+    # let's process all the errata in our with common ERRIDs
+    errid_matches = set(idindex1.keys()).intersection(idindex2.keys())
+    rhn.logDebug("Found %d matching ERRIDs in naive diffs" % len(errid_matches))
+    for match in errid_matches:
+        err1 = idindex1.get(match)
+        err2 = idindex2.get(match)
+        if err1.get('synopsis') == err2.get('synopsis'):
+            # these errata have different advisories
+            # but the same ERRID and synopsis, so are probably clones
+            # let's remove them from our diffs
+            rhn.logDebug("%s and %s are clones of one another" %(err1.get('advisory'), err2.get('advisory')))
+            ldiff.remove(err1.get('advisory'))
+            rdiff.remove(err2.get('advisory'))
+        else:
+            # these errata are different (are not clones of one another)
+            # but have the same  ERRID (YYYY:NNNN)
+            # This should probably never happen unless custom errata are present
+            # the advisories are already in the diffs
+            continue
+    ldiff_info = [ ( adv, advindex1[adv]['synopsis'] ) for adv in ldiff ]
+    rdiff_info = [ ( adv, advindex2[adv]['synopsis'] ) for adv in rdiff ]
+
+    # return ldiff, rdiff
+    return ldiff_info, rdiff_info
+
+# ---------------------------------------------------------------------------- #
+
+def find_errata_packages(rhn, sourcechannel, errset, pkgset):
+    """
+    processes all the errata names in errset
+
+    parameters:
+        rhn (rhnapi.rhnSession)
+        sourcechannel: channel label these errata/pkgs come from
+        errset: set(list) of advisories to sync
+        pkgset: set(list) of pkgs to sync
+    """
+    # rejected _errata
+    err_rejects = set()
+    err_matches = set()
+    # all source channel packages from all errata in errset
+    seenpkgs = set()
+    # additional source channel packages that are not in pkgset
+    extrapkgs = set()
+    pkginfo = []
+    print "  - Finding packages for %d errata in %s"  % ( len(errset), sourcechannel)
+    errwidgets = [ "Errata: ", Counter(format="%4d"), "/%4d " % len(errset), Bar(), Timer() ]
+    pbar = ProgressBar(widgets=errwidgets, maxval=len(errset), term_width=80).start()
+    for idx, errinfo in enumerate(errset):
+        errname = errinfo[0]
+        rhn.logDebug("Processing erratum %s" % errname)
+        errpkgs = errata.listPackages(rhn, errname)
+        # find errata packages from our source channel
+        src_pkgs = set(get_pkgstr(p) for p in errpkgs if sourcechannel in p.get('providing_channels'))
+        rhn.logDebug("%s provides %d packages of which %d are in source channel" %(errname, len(errpkgs), len(src_pkgs)))
+        # this will allow us to dump errata that *only* provide packages not in our list
+        matchingpkgs = src_pkgs.intersection(pkgset)
+        if len(matchingpkgs) == 0:
+            rhn.logDebug("rejecting erratum %s as it provides no packages we care about" % errname)
+            err_rejects.add(errinfo)
+        else:    
+            err_matches.add(errinfo)
+            seenpkgs.update(src_pkgs)
+            extras = src_pkgs.difference(pkgset)
+            if len(extras) > 0:
+                # we have other pkgs in our source that are not in the source:dest diff.
+                rhn.logDebug("%s also provides %d packages not in our diff" %(errname, len(extras)))
+                for extrapkg in extras:
+                    rhn.logDebug("Additional package: %s" % extrapkg)
+                extrapkgs.update(extras)
+            else:
+                rhn.logDebug("All packages from %s are in our diff" % errname)
+            # update the progressbar
+
+        pbar.update(idx+1)
+    pbar.finish()
+
+    # remove all the errata packages from our "diff"
+    pkgset.difference_update(seenpkgs)
+
+    return pkgset, extrapkgs, err_matches
+
+# ---------------------------------------------------------------------------- #
 def main(argv):    
     """
     This is overcomplicated and should be broken down, really
@@ -361,7 +579,7 @@ def main(argv):
             channelmaps = []
             # parse any and all destination channels provided
             chanlist = [ ch.get('label') for ch in channel.listSoftwareChannels(RHN) ]
-            print destchannels
+            # print destchannels
             for chan in destchannels:
                 RHN.logDebug("Checking channel %s" % chan)
                 if chan not in chanlist:
@@ -371,8 +589,20 @@ def main(argv):
                     channelmaps.append({ 'label' : chan, 'source' : opts.source })
 
             # because the source is the same for all channels, let's do this once and once only
-            srcpkgs = channel.listLatestPackages(RHN, opts.source)
-            srcidx = dict(zip([ pkgfmt % p for p in srcpkgs ], srcpkgs))
+            if opts.latest:
+                RHN.logInfo("Indexing latest packages in source channel %s" % opts.source)
+                print "Indexing latest packages in source channel %s" % opts.source
+                srcpkgs = channel.listLatestPackages(RHN, opts.source)
+                allsrcpkgs = channel.listAllPackages(RHN, opts.source)
+            else:
+                RHN.logInfo("Indexing all packages in source channel %s" % opts.source)
+                print "Indexing all packages in source channel %s" % opts.source
+                srcpkgs = channel.listAllPackages(RHN, opts.source)
+            
+            RHN.logInfo("Indexing errata in source channel %s" % opts.source)
+            srcerrata = channel.listErrata(RHN, opts.source)
+
+
         else:
             multisource = True
             channelmaps = []
@@ -392,81 +622,125 @@ def main(argv):
             print "Processing channel group %s" % opts.group
         for chanmap in channelmaps:
             RHN.logInfo("processing %(source)s => %(label)s" % chanmap)
-            print "* %(label)s" % chanmap
+            print "* diffing %(label)s against source channel %(source)s" % chanmap
+            print "  - gathering package and errata information..."
             dstchan = chanmap.get('label')
             srcchan = chanmap.get('source')
             # does everything map to the same source
             if multisource:
-                RHN.logInfo("Indexing latest packages in source channel %s" % srcchan)
-                srcpkgs = channel.listLatestPackages(RHN,  srcchan)
-                srcindex = dict(zip([ pkgfmt % p for p in srcpkgs ], srcpkgs))
+                # use the abstracted package diffing method
+                srcidx, pkgdiff, dstpkgs =  package_diff(RHN, srcchan, dstchan, latestonly=opts.latest)
+                # to track down any additional packages in our channel, which may not be 'latest'
+                if opts.latest:
+                    allsrcpkgs = channel.listAllPackages(RHN, srcchan)
 
                 RHN.logInfo("Indexing errata in source channel %s" % srcchan)
-                srcerrata = channel.listErrata(RHN, srcchan)
-                srcerridx = dict(zip((e.get('advisory') for e in srcerrata),srcerrata))
 
-            # else we already have srcpkgs and srcidx
-            
-            # get a list of packages already in the destination channel
-            RHN.logInfo("Indexing latest packages in destination channel %s" % dstchan)
-            dstpkgs = channel.listLatestPackages(RHN, dstchan)
-            dstindex = dict(zip([ pkgfmt % p for p in dstpkgs ], dstpkgs))
+                errdiff, dsterrdiff = errata_diff(RHN, srcchan, dstchan)
 
-            # get a list of packages not in the destination channel
-            pkgdiff = set(srcindex.keys())
-            pkgdiff.difference_update(set(dstindex.keys()))
+            else:
+                # use our already-calculated package and errata lists
+                srcidx, pkgdiff, dstpkgs = package_diff(RHN, srcchan, dstchan, latestonly=opts.latest, pkgs1=srcpkgs)
+                errdiff, dsterrdiff = errata_diff(RHN, srcchan, dstchan, errlist1=srcerrata)
+
+            chanmap['package_sync_count'] = len(pkgdiff)
+
+            # 
+            if opts.latest:
+                allsrcidx = dict(zip((get_pkgstr(p) for p in allsrcpkgs), allsrcpkgs))
+            else:
+                allsrcidx = srcidx
+
+            print "  - %d packages in %s to process" %(len(pkgdiff), srcchan)
 
             # log the number of packages we need to inspect
             RHN.logDebug("%d packages in %s but not in %s" %(len(pkgdiff), srcchan, dstchan))
 
+
+            # we currently have (that we care about):
+            # srcidx: index of NVREA:pkgdict for source channel
+            # pkgdiff: set of NVREA that are in source but not dest
+            # errdiff: set of tuples (advisory, synopsis) that are in source but not dest.
+
+# ------------- work out which packages came from which erratum -------------- #
+
+            if len(errdiff) > 0:
+                # print "  - Finding packages for %d errata in channel %s" %(len(errdiff), srcchan)
+                # nonerrpkgs: set of nvrea from our diff, not provided by errata
+                # additionalpkgs: set of nvrea (packages in a given erratum that are not in the diff)
+                nonerrpkgs, additionalpkgs, errmatches = find_errata_packages(RHN, srcchan, errdiff, pkgdiff)
+                reject_count = len(errdiff) - len(errmatches)
+                if reject_count > 0:
+                    print "    Excluded %d errata as they provide no packages from our diff" % reject_count
+                    print "    (they may provide older packages. Try again using --all)"
+                    errdiff = errmatches
+            else:
+                print "  - no errata to process"
+                nonerrpkgs = pkgdiff
+                additionalpkgs = set()
+
+
+# ------- Store our errata and package information for later reporting ------- #
+
+            # errata we'll synchronise
+            chanmap['errata_to_sync'] = errdiff
             # okay, now we have a set of package NVREA strings to find errata for.
             # when we find these errata, we'll check if they provide other packages in our list
+
             # a dict containing non-errata packages to sync, indexed on NVRA
-            chanmap['pkgindex'] = {}
-            chanmap['pkglist'] = set([])
+            # from srcidx
+            syncpkgindex = {}
+            if len(nonerrpkgs) > 0:
+                print "processing %d non-errata packages" % len(pkgdiff)
+                pkgwidgets = [ "Packages: ", Counter(format="%4d"),"/%-4d" % len(pkgdiff),
+                               Bar(), Timer() ]
+                pbar = ProgressBar(widgets=pkgwidgets, maxval=len(pkgdiff), term_width=80).start()
+                for counter, pkgstr in enumerate(pkgdiff):
+                    pkginfo = srcidx.get(pkgstr)
+                    pkginfo['nvrea'] = pkgstr
+                    # now let's fetch details for our package
+                    RHN.logInfo("Fetching info for %s" % pkgstr)
+                    pkgdetails = packages.getDetails(RHN, pkginfo.get('id'))
+                    pkginfo.update(pkgdetails)
+                    syncpkgindex[pkgstr] = pkginfo
+                    pbar.update(counter+1)
+                pbar.finish()
 
-            # a dict containing sync errata, indexed on advisory
-            chanmap['errindex'] = {}
-            chanmap['errlist'] = set([])
-
-            if len(pkgdiff) > 0:
-                # sets for advisory and package names
-                count = 0
-                widgets = ['progress: ', Counter(), '/ %d Packages [' % len(pkgdiff), 
-                           Percentage(), ']', Bar(), '(', Timer(), ')']
-                pbar = ProgressBar(widgets=widgets, maxval=len(pkgdiff), term_width=80).start()
-                # process all packages and find the errata providing them, if there are any
-                for idx, pkg in enumerate(pkgdiff):
-                    pkgobj = srcindex.get(pkg)
-                    RHN.logDebug("Getting details for package %s" % pkg)
-                    pkgdetails = packages.getDetails(RHN, pkgobj.get('id'))
-                    pkgobj.update(pkgdetails)
-                    pkgobj['nvrea'] = pkg
-                    RHN.logDebug("Finding Errata for package %s" % pkg)
-                    erratalist = packages.listProvidingErrata(RHN, pkgobj.get('id'))
-                    if len(erratalist) == 0:
-                        RHN.logDebug("Package %s does not appear to come from an erratum" % pkg)
-                        chanmap['pkglist'].add(pkg)
-                        chanmap['pkgindex'][pkg] = pkgobj
-                    else:
-                        for e in erratalist:
-                            adv = e.get('advisory')
-                            if adv in srcerridx.keys():
-                                RHN.logDebug("Adding %s to sync list" % adv)
-                                errdetails = errata.getDetails(RHN, adv)
-                                e.update(errdetails)
-                                chanmap['errlist'].add(adv)
-                                chanmap['errindex'][adv] = e
-                            else:
-                                RHN.logDebug("Cannot find Erratum %(advisory)s in source channel, ignoring" % e)
-                    pbar.update(idx + 1)
-                print
-
-                RHN.logInfo("Found %d Errata to Sync from %s to %s" % (len(chanmap['errlist']),srcchan,dstchan))
-                RHN.logInfo("Found %d packages not provided by errata" % len(chanmap['pkglist']))
-            print "  Errata: %d, Packages: %d" % (len(chanmap['errlist']), len(chanmap['pkglist']))
+            # now process the additional packages if we have any to make sure they aren't already synced
+            extra_package_index = {}
+            if len(additionalpkgs) > 0:
+                RHN.logDebug("Excluding already-synced packages")
+                additionalpkgs.difference_update(dstpkgs)
+                RHN.logDebug("%d extra packages will be synced via errata" % len(additionalpkgs))
+                for epkg in additionalpkgs:
+                    RHN.logDebug("Additional pkg: %s" % epkg)
+                print "processing %d extra packages" % len(additionalpkgs)
+                pkgwidgets = [ "Packages: ", Counter(format="%4d"),"/%-4d" % len(additionalpkgs),
+                               Bar(), Timer() ]
+                pbar = ProgressBar(widgets=pkgwidgets, maxval=len(additionalpkgs), term_width=80).start()
+                for counter, pkgstr in enumerate(additionalpkgs):
+                    pkginfo = allsrcidx.get(pkgstr,{})
+                    pkginfo['nvrea'] = pkgstr
+                    # now let's fetch details for our package
+                    RHN.logInfo("Fetching info for %s" % pkgstr)
+                    pkgdetails = packages.getDetails(RHN, pkginfo.get('id'))
+                    pkginfo.update(pkgdetails)
+                    extra_package_index[pkgstr] = pkginfo
+                    pbar.update(counter+1)
+                pbar.finish()
 
 
+            chanmap['package_index'] = syncpkgindex
+            chanmap['extra_package_index'] = extra_package_index
+            
+            # list of nvrea I think
+            chanmap['non_errata_pkgs'] = nonerrpkgs
+
+            RHN.logInfo("Found %d Errata to Sync from %s to %s" % (len(errdiff), srcchan, dstchan))
+            RHN.logInfo("Found %d Packages to Sync from %s to %s" % (len(pkgdiff), srcchan, dstchan))
+            print "Sync Summary: Errata: %d, Packages: %d" % (len(errdiff),len(pkgdiff))
+
+            print
 
 # ----------- At this point we've worked through all our channels ------------ #
         if opts.test:
@@ -484,7 +758,7 @@ def main(argv):
                     except OSError, E:
                         RHN.logError("Unable to create/write to output file %s" % opts.output)
                         RHN.logError("Error was: %s" % E.strerror)
-                        print "Failed to create %s - %s" %(opts.output, E.strerror)
+                        print "Failed to create %s - %s" % (opts.output, E.strerror)
                         sys.exit(255)
                     except IOError, E:
                         RHN.logError("Unable to create/write to output file %s" % opts.output)
@@ -499,6 +773,24 @@ def main(argv):
                 else:
                     print '\n'.join(reportlines)
                     sys.exit(0)
+            else:
+                # print a brief summary to stdout
+                for chanmap in channelmaps:
+                    source = chanmap.get('source')
+                    dest = chanmap.get('label')
+                    errata_pkg_count = chanmap['package_sync_count'] - len(chanmap['non_errata_pkgs'])
+                    errata_count = len(chanmap['errata_to_sync'])
+                    
+
+                    print "%s => %s" %(source, dest)
+                    print "%s====%s" %( "=".ljust(len(source),"="), "=".ljust(len(dest),"=") )
+                    print "Packages to sync:     %4d" % chanmap.get('package_sync_count', 0)
+                    print "Errata to sync:       %4d" % errata_count
+                    print "Packages from Errata: %4d" % errata_pkg_count
+                    print "Non-Errata Packages:  %4d" % len(chanmap.get('non_errata_pkgs',[]))
+                    print "Additional Packages:  %4d" % len(chanmap.get('extra_package_index', []))
+                sys.exit(0)
+
 
 
 ## old code follows
@@ -507,24 +799,34 @@ def main(argv):
             print "Beginning sync process"
             for chanmap in channelmaps:
                 # we are not in test mode, try syncing stuff
-                erratalist = chanmap.get('errlist', [])
-                packagelist = chanmap.get('pkglist', [])
+                erratalist = chanmap.get('errata_to_sync', [])
+                packagelist = chanmap.get('non_errata_pkgs', [])
                 destchannel = chanmap.get('label')
+                sourcechannel = chanmap.get('source')
+                print "*  synchronising %s from " % destchannel
                 if len(erratalist) > 0:
                     # we have errata for syncing
-                    cloneme = set(x for x in erratalist if rhpatt.match(x))
-                    publishme = erratalist.difference(cloneme)
-
+                    cloneme = []
+                    publishme = []
+                    for err in erratalist:
+                        if rhpatt.match(err[0]):
+                            cloneme.append(err)
+                        else:
+                            publishme.append(err)
                     # This is unlikely as we'll normally just do this for
                     # custom channels, but nonetheless...
                     if len(cloneme) > 0:
+                        print "  - Cloning %d errata"
+                        RHN.logInfo("Cloning %d Errata into %s" % (len(cloneme), destchannel))
+                        clonelist = [ err[0] for err in cloneme ]
                         res = errata.cloneAsOriginal(RHN, destchannel, list(cloneme))
                         if res:
                             RHN.logInfo("Cloned %d errata into %s" %(len(cloneme), destchannel))
                     if len(publishme) > 0:
                         # we have to publish errata one-by-one
                         # we'll show a progressbar for this
-                        widgets = ['Publishing Errata: ', 
+                        print "  - Publishing %d errata. This may take some time" % len(publishme)
+                        widgets = ['Errata: ', 
                                     Counter(), 
                                     '/ %d [' % len(publishme), 
                                     Percentage(), ']', 
@@ -535,25 +837,25 @@ def main(argv):
                                            term_width=80).start()
 
                         for ind, pberr in enumerate(publishme):
-                            RHN.logDebug("publishing %s" % pberr)
-                            res = errata.publishAsOriginal(RHN, pberr, [ destchannel ])
+                            RHN.logDebug("publishing %s (%s)" % pberr)
+                            res = errata.publishAsOriginal(RHN, pberr[0], [ destchannel ])
                             if res:
-                                RHN.logInfo("Published %s" % pberr)
+                                RHN.logInfo("Published %s" % pberr[0])
                             else:
-                                RHN.logWarn("Failed to publish %s" % pberr)
+                                RHN.logWarn("Failed to publish %s" % pberr[0])
                             pbar.update(ind +1)
-                        print
+                        pbar.finish()
 
                 if len(packagelist) > 0:
-                    print "adding %d non-errata packages to %s" %(len(packagelist), destchannel)
+                    print "  - Adding %d non-errata packages" % len(packagelist)
                     RHN.logInfo("Adding non-errata packages")
-                    pkgids = [ p.get('id') for p in chanmap['pkgindex'].values() ]
+                    pkgids = [ p.get('id') for p in chanmap['package_index'].values() ]
                     if channel.addPackages(RHN, destchannel, pkgids):
                         RHN.logInfo("Succesfully added %d packages to channel %s" %(len(pkgids), destchannel))
                     else:
-                        RHN.logError("Failed to add pacakges to channel %s. See logs for details" % destchannel)
+                        RHN.logError("Failed to add packages to channel %s. See logs for details" % destchannel)
                 else:
-                    print "No packages to sync to %(label)s" % chanmap
+                    print "  - 0 non-errata packages to sync"
                 
 
     except KeyboardInterrupt:
