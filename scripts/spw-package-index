@@ -31,6 +31,8 @@ __author__ = "Your Name <email>"
 import os
 import sys
 from optparse import OptionParser, OptionGroup
+from fnmatch import fnmatch
+import time
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
@@ -40,7 +42,7 @@ from rhnapi import utils
 # from rhnapi import packages
 
 # may remove some of these later
-from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
+from progressbar import Counter, Percentage, ProgressBar, Timer, AnimatedMarker, Bar
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -85,14 +87,10 @@ def parse_cmdline(argv):
         help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
     parser.add_option('-v', '--verbose', action = 'store_true', default = False,
         help = "increase verbosity. Sets loglevel to INFO")
-    parser.add_option('-p', '--progress', action = 'store_true', default = False,
-        help = "Show a progressbar for long-running operations")
-    parser.add_option('-f', '--force', action = 'store_true', default = False,
-        help = "Overwrite output file if it already exists.")
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
-    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--server", help="RHN satellite server hostname [%default]", default=RHNHOST)
     rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
     rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
@@ -102,27 +100,77 @@ def parse_cmdline(argv):
         help = "log output to the given filename. If you enable logging without this, logs go to stderr")
     parser.add_option_group(rhngrp)
 
+    idxgrp = OptionGroup(parser,"Index file and output options")
+    idxgrp.add_option("-u", "--update", action="store_true", default=False,
+        help="Update an existing index. Use this to add missing packages only. Index file must exist and be parseable")
+    idxgrp.add_option("-i", "--ignore-date", action="store_true", default=False,
+        help="Do not use modification dates to decide which channels to scan")
+    idxgrp.add_option("-c", "--channels", 
+        help="comma-separated list of channels (shell-style globs also work, but quote them) to scan for packages. Implies --update")
+    idxgrp.add_option('-f', '--force', action = 'store_true', default = False,
+        help = "Overwrite output file if it already exists.")
+    parser.add_option('-p', '--progress', action = 'store_true', default = False,
+        help = "Show a progressbar for long-running operations")
+    parser.add_option_group(idxgrp)
+
     opts, args = parser.parse_args(argv)
+
+    if opts.channels:
+        opts.channels = opts.channels.split(",")
 
     # check the args for errors etc...
     # expecting outputfile on the command line
     if len(args) != 1:
         error(["ERROR: No output file provided."])
     # barf if it already exists and we aren't forcibly overwriting it.
-    elif os.path.isfile(args[0]) and not opts.force:
-        error(["ERROR: Output file %s already exists" % args[0],
-               "Either remove or rename the file, or provide the '-f/--force' option to overwrite it"],
-               2)
-    else:
+    else: 
         outfile = args[0]
+        if os.path.isfile(outfile): 
+            if opts.update:
+                print "Updating existing file %s in-place" % outfile
+            elif opts.force:
+                print "overwriting existing index file %s" % outfile
+            else:
+                error(["ERROR: Output file %s already exists" % args[0],
+                       "Either remove or rename the file, or provide the '-f/--force' option to overwrite it"],
+                       2)
 
 
     # finally...
-    return opts, outfile
+    return opts, os.path.expanduser(outfile)
         
 # ---------------------------------------------------------------------------- #
 
+def get_changed_channels(rhn, timestamp, chanlist=None, progress=False):
+    """
+    Find channels updated since the given timestamp
+    the timestamp should be a time.struct_time tuple,
+    which you can get from time.mktime or time.localtime
+    """
+    changed_chans = []
 
+    if chanlist is None:
+        chanlist =  [ c.get('label') for c in channel.listSoftwareChannels(rhn) ]
+
+    if progress:
+        chanwg = [ "Channels: ", Counter(format="%4d"), "/%4d " % len(chanlist),
+                   Bar(), Timer() ]
+        pbar = ProgressBar(widgets=chanwg, maxval=len(chanlist), term_width=80).start()
+
+    for ctr, chan in enumerate(chanlist):
+        chaninfo = channel.getDetails(rhn, chan)
+        chanmtime = time.strptime(rhn.decodeDate(chaninfo.get('last_modified')), "%Y-%m-%d %H:%M:%S")
+        if chanmtime > timestamp:
+            changed_chans.append(chan)
+        if progress:
+            pbar.update(ctr+1)
+    if progress:
+        print
+
+    return changed_chans
+
+
+# ---------------------------------------------------------------------------- #
 def main(argv):    
     opts, outputfile = parse_cmdline(argv[1:])
 
@@ -147,32 +195,78 @@ def main(argv):
         if opts.debug:
             RHN.enableDebug()
         # DO STUFF with your RHN session and commandline options
+        allchannels = [ ch.get('label') for ch in channel.listSoftwareChannels(RHN) ]
 
-        chanlist = channel.listAllChannels(RHN)
-        maxlen = utils.getMaxLen(chanlist)
-        fmtstr = '%%(label)-%(label)ds' % maxlen
-        pkgindex = {}
+        if opts.channels:
+            chanlist = [ ch for ch in allchannels if any([fnmatch(ch, patt) for patt in opts.channels]) ]
+            print "Provided pattern matches the following channels:"
+            for chan in chanlist:
+                print chan
+                # print "%(label)s (%(name)s)" % chan
+            if len(chanlist) == 0:
+                print "No channels found matching patterns: %s" % ", ".join(opts.channels)
+        else:
+            chanlist = allchannels
+
+        maxlen = max((len(ch) for ch in chanlist))
+        fmtstr = '%%-%ds' % maxlen
+
+
+        if opts.update:
+            if os.path.exists(outputfile):
+                print "Loading existing index"
+                pkgindex = utils.loadJSON(outputfile)
+                timestamp = time.localtime(os.path.getmtime(outputfile))
+                print "Finding channels changed since the last index update"
+                if not opts.ignore_date:
+                    chanlist = get_changed_channels(RHN, timestamp, chanlist, opts.progress)
+                    if len(chanlist) == 0:
+                        print "No channels have been updated, index is up to date"
+                        sys.exit(0)
+            else:
+                pkgindex = {}
+        else:
+            pkgindex = {}
+
         print "Indexing unique packages by channel"
 
-        for chan in chanlist:
-            RHN.logInfo("Processing Channel %s (%s)" % (chan.get('label'), chan.get('name')))
-            if chan.get('packages', 0) != 0:
-                packagelist = channel.listAllPackages(RHN, chan.get('label'))
-            else:
-                RHN.logDebug("Channel %s contains no packages, skipping it" % chan.get('label'))
+
+
+        for chanct, chan in enumerate(chanlist):
+            RHN.logInfo("Processing Channel %s " % chan)
+            chanpkgs = channel.listAllPackages(RHN, chan)
+            chanidx = utils.index_dictlist(chanpkgs, utils.get_pkgstr)
+            if len(chanpkgs) == 0:
+                RHN.logDebug("Channel %s contains no packages, skipping it" % chan)
                 continue
+
+            # let's walk over the keys
+            pkgs = set(chanidx.keys())
+            if opts.update:
+                # skip any and all packages that we already know about
+                if opts.verbose or opts.debug:
+                    print "skipping known packages in channel %s" % chan
+                pkgs.difference_update(pkgindex.keys())
+            if len(pkgs) == 0:
+                RHN.logDebug("Channel %s contains no unknown packages, skipping it" % chan)
+                continue
+                
+
+            print "indexing %d new packages from channel %s" %(len(pkgs), chan)
             if opts.progress:
-                widgets = [ fmtstr % chan, Counter(), ' Packages [', Percentage(), ']', '(', Timer(), ')']
-                pbar = ProgressBar(maxval = len(packagelist), widgets = widgets).start()
-            for p in packagelist:
-                k, v = '%(name)s-%(version)s-%(release)s.%(arch_label)s' % p, p.get('id')
-                if pkgindex.has_key(k):
-                    RHN.logDebug("Skipping existing package %s" % k)
-                else:
-                    pkgindex[k] = v
+                barlen = len(pkgs)
+                widgets = [ fmtstr % chan, Counter(format="%8d"), ' Packages [', Percentage(), ']']
+                pbar = ProgressBar(maxval = barlen, widgets = widgets).start()
+            
+            for idx, p in enumerate(pkgs):
+                pkgindex[p] = chanidx[p].get('id')
                 if opts.progress:
-                    pbar.update(packagelist.index(p) + 1 )
-        print                    
+                    pbar.update(idx + 1)
+
+            if opts.progress:
+                pbar.update(barlen)
+            print                    
+        print
         print "Done. %d unique packages indexed" % len(pkgindex)
         print "Dumping to output file %s" % outputfile
 
