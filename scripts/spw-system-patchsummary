@@ -33,6 +33,7 @@ import sys
 import time
 from optparse import OptionParser, OptionGroup
 from operator import itemgetter
+import csv
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi

@@ -77,7 +77,7 @@ def parse_cmdline(argv):
         """
         # I'll only call this with a list or a string, but just in case...
         if isinstance(errmsg, (list, tuple, set)):
-            print "\n".join(errlines)
+            print "\n".join(errmsg)
         else:
             print errmsg
         parser.print_help()

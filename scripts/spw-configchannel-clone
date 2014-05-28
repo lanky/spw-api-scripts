@@ -356,7 +356,7 @@ def main():
 
                 # now if we get here, our channel should exist...
                 if opts.update:
-                    failed_objects = update_channel_content(RHN, chandata, RHN,logger)
+                    failed_objects = update_channel_content(RHN, chandata, RHN.logger)
                 else:
                     failed_objects = add_channel_content(RHN, chandata, RHN.logger)
 

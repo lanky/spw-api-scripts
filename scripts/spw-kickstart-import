@@ -39,6 +39,7 @@ import os
 import re
 from optparse import OptionParser, OptionGroup
 from pprint import pprint
+from fnmatch import fnmatch
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
@@ -184,6 +185,17 @@ def set_ks_details(rhn, ksobject, logscripts = False, interactive = False, verbo
             rhn.logErr("failed to add %(type)s script, continuing anyway" % script)
             print res
             continue
+    # handle log_post and log_pre being absent from our kickstart object
+    log_post = ksobject.get('log_post', False)
+    log_pre = ksobject.get('log_pre', False)
+    rhn.logDebug("Configuring pre and post script logging")
+    if kickstart.setLogging(rhn, kslabel, log_pre, log_post):
+        if log_pre:
+            rhn.logDebug("successfully enabled %pre script logging")
+        if log_post:
+            rhn.logDebug("successfully enabled %post script logging")
+    else:
+        rhn.logErr("Failed to configure pre and post script logging")
     rhn.logDebug("importing IP ranges for bare-metal kickstart")
     for iprange in ksobject['ip_ranges']:
         if kickstart.addIpRange(rhn, kslabel, iprange['min'], iprange['max']):
@@ -694,7 +706,8 @@ def main():
                 RHN.logWarn("Kickstart distribution %(tree_label)s already exists, using it." % ksobject )
                 RHN.logWarn("Be sure to check it points to the correct installation tree.")
             else:
-                if not create_kickstart_tree(RHN, ksobject.get('ks_tree')):
+                treeobj = ksobject.get('ks_tree')
+                if not create_kickstart_tree(RHN, treeobj):
                     RHN.logError("error creating tree %(label)s - you may need to create this manually" % treeobj)
                     sys.exit(1)
 

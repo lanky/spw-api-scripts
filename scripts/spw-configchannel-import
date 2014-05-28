@@ -135,9 +135,9 @@ def get_confchannel_info(rhn, channel_label, verbose=False):
     rhn.logInfo("Processing Config Channel %s" % channel_label)
     channeldata = configchannel.detailsByLabel(rhn, channel_label)
     rhn.logDebug("* Enumerating Config Files")
-    filelist = [ x['path'] for x in configchannel.listFiles(RHN, channel_label) ]
+    filelist = [ x['path'] for x in configchannel.listFiles(rhn, channel_label) ]
     channeldata['files'] = []
-    for fentry in configchannel.lookupFileInfo(RHN, channel_label, filelist):
+    for fentry in configchannel.lookupFileInfo(rhn, channel_label, filelist):
         # we have to handle the ISO datetime stampa - converting to strings
         # we'll probably lose this data on import anyway
         rhn.logDebug("  - processing file %(path)s" % fentry)
@@ -278,9 +278,8 @@ def main():
 # output file for rejects (channels or content we fail to import/update)
             rejectsfile = "%(label)s-rejects.json" % chan
             RHN.logInfo("Starting import process for Config Channel %(label)s" % chan)
-            if chan['label'] in existing_labels:
 # if the channel already exists on our server
-
+            if chan['label'] in existing_labels:
 # channel exists and we specified --replace
                 if opts.replace:
                     RHN.logInfo("replacing already existing channel %(label)s" % chan)
@@ -300,12 +299,8 @@ def main():
                 if create_config_channel(RHN, chan):
                     RHN.logInfo("created config channel %(label)s")
                 else:
-                    RHN.logError("Creation of  configuration channel %(label)s failed, skipping it" % chan)
+                    RHN.logError("Creation of configuration channel %(label)s failed, skipping it" % chan)
                     RHN.logDebug("Dumping failed channel to %s" % rejectsfile)
-                    if utils.dumpJSON(failed_objects, rejectsfile):
-                        RHN.logDebug("Rejects saved to %s" % rejectsfile)
-                    else:
-                        RHN.logError("could not save rejects file. This should not happen.")
                     continue
 
 # channel exists, either as new channel or for updating

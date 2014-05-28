@@ -1,0 +1,239 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# requires the python-rhnapi and python-progressbar modules
+#
+# Copyright 2012 (c)Stuart Sears <stuart.sears@man.com>
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it 
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+"""
+spw-channel-export
+
+Exports an RHN software channel as JSON, including
+1. All Errata
+2. All packages, by (E:)N-V-R.A
+3. All non-errata packages
+
+plus the usual label metadata.
+Intended to allow the recreation of a channel from one satellite on another.
+
+"""
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel, errata, utils
+from progressbar import ProgressBar, Counter, Bar, Timer
+
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    list All packages in a given channel in E:NVR.A format, outputting to a text file.
+    """
+    preamble = """Lists all packages in a channel, dumping to a text file.
+Useful for recreating channels on another box, or basic reporting"""
+    usagestr = "%prog [RHNOPTS] CHANNELLABEL"
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server", help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    pkggrp = OptionGroup(parser, "Package/Channel Options")
+    pkggrp.add_option("-d", "--destdir", help = "destination directory for all output files.")
+    pkggrp.add_option("-r", "--recursive", action="store_true", default=False,
+        help="process all child channels of CHANNELLABEL. Creates one output file per channel.")
+    pkggrp.add_option("-l", "--latest", action="store_true", default=False,
+        help="List only the latest version for each package in the chosen software channels")
+    parser.add_option_group(pkggrp)
+
+
+    if len(argv) == 0:
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    if len(args) != 1:
+        print "ERROR: no channel label supplied"
+        parser.print_help()
+        sys.exit(1)
+
+    # finally...
+    return opts, args
+# ---------------------------------------------------------------------------- #
+
+def main():    
+    """
+    Main script entry point if run directly
+    """
+    opts, args = parse_cmdline(sys.argv[1:])
+    if opts.debug:
+        rhnloglevel = 10
+    elif opts.verbose:
+        rhnloglevel = 20
+    else:
+        rhnloglevel = 30
+
+    # initialise an RHN Session
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = os.path.basename(sys.argv[0]), loglevel=rhnloglevel,
+                                )
+        # did we give the --verbose switch?
+        if opts.verbose:
+            RHN.enableVerbose()
+
+        # debug dials up the logging some more
+        if opts.debug:
+            RHN.enableDebug()
+        # DO STUFF with your RHN session and commandline options
+        chanlabel = args[0]
+
+# does the channel we specified actually exist?
+        try:
+            RHN.logDebug("Looking up info for channel label %s" % chanlabel)
+            chanobj = channel.getDetails(RHN, chanlabel)
+            if not chanobj:
+                RHN.logError("No such channel: %s" % chanlabel)
+                sys.exit(3)
+            isparent = chanobj.get('parent_channel_label').strip() == '' 
+            chanlist = [ chanobj ]
+
+# are we in recursive mode and are there any child channels to list?            
+            if opts.recursive:
+                if not isparent:
+                    print "* is not a base channel, no recursion possible"
+                    RHN.logError("Channel %s has no child channels" % chanlabel)
+                else:
+                    chanlist.extend(channel.listChildren(RHN, chanlabel))
+                    print "* found %d child channels to export" % (len(chanlist) - 1)
+# process each channel at a time and dump a package list
+            for chan in chanlist:
+                chanlabel = chan.get('label')
+                print "* processing channel %s" % chanlabel
+                if opts.destdir:
+                    # outputfile = os.path.join(opts.dir, "%s-pkglist.txt" % chan.get('label'))
+                    outputfile = os.path.join(opts.destdir, "%(label)s-export.json" % chan)
+                    if not os.path.isdir(opts.destdir):
+                        try:
+                            os.makedirs(opts.destdir)
+                        except OSError, Err:
+                            RHN.logError("%s does not exist and I cannot create it." % opts.destdir)
+                            RHN.logError(Err.strerror)
+                            sys.exit(50)
+                        except:
+                            # raise any other exceptions for recording purposes
+                            raise
+                else:
+                    outputfile = "%(label)s-export.json" % chan
+                RHN.logInfo("listing packages for channel %s" % chanlabel)
+                allpackageobjs = channel.listLatestPackages(RHN, chanlabel)
+                latestpackageobjs = channel.listAllPackages(RHN, chanlabel)
+
+                # get package E:NVR.A strings, as a set
+                print "  - Listing packages"
+                chanpkgs = set(utils.get_pkgstr(p) for p in allpackageobjs)
+                chan['allpackages'] = list(chanpkgs)
+                RHN.logDebug("package count (all)- %d" % len(chanpkgs))
+                latestpkgs = set(utils.get_pkgstr(p) for p in latestpackageobjs)
+                chan['latestpkgs'] = list(latestpkgs)
+                RHN.logDebug("package count (latest only) - %d" % len(latestpkgs))
+
+                # now let's get errata-provided packages:
+                print "  - Listing errata"
+                errataobjs = channel.listErrata(RHN, chanlabel)
+                chanerr = set(e.get('advisory') for e in errataobjs)
+                RHN.logInfo("Got %d errata for channel %s" %(len(chanerr), chanlabel))
+
+                # walk the errata and find all the packages that came from errata.
+                if len(chanerr) > 0:
+                    print "  - Finding packages for %d errata (could take some time)" % len(chanerr)
+                    errwidgets = [ "Errata: ", Counter(), Bar(), Timer() ]
+                    pbar = ProgressBar(widgets=errwidgets, maxval=len(errataobjs), term_width=80).start()
+
+                    for index, err in enumerate(chanerr):
+                        errpkgs = set(utils.get_pkgstr(p) for p in errata.listPackages(RHN, err) if chanlabel in p.get('providing_channels'))
+                        RHN.logDebug("Removing %d packages provided by %s from package list" %(len(errpkgs), err))
+                        chanpkgs.difference_update(errpkgs)
+                        # update our progressbar
+                        pbar.update(index + 1)
+                    print
+                    print "* reduced package list to %d entries" % len(chanpkgs)
+                else:
+                    print "    * No errata to process"
+
+
+                # we're including the errata objects to allow for name/synopsis comparison on another satellite
+                chan['errata'] = errataobjs
+                chan['packages'] = list(chanpkgs)
+
+                if utils.dumpJSON(chan, outputfile):
+                    print "* successfully exported channel %s to %s" % (chanlabel, outputfile)
+
+        except:
+            RHN.logError("Error getting channel details - does %s actually exist?" % chanlabel)
+            sys.exit(3)
+        
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main()
+
+
+
+# footer - do not edit below here
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:

@@ -100,7 +100,7 @@ exist on both but are newer in the source channel"""
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
-    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--server", help="RHN satellite server hostname [%default]", default=RHNHOST)
     rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
     rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
@@ -168,8 +168,8 @@ def get_evr(nvrea):
     :returns: tuple, (epoch, version, release)
     """
 
-    n,v,r,e,a = splitFilename(nvrea)
-    return (e,v,r)
+    n, v, r, e, a = splitFilename(nvrea)
+    return (e, v, r)
 
 # ---------------------------------------------------------------------------- #
 
@@ -182,8 +182,8 @@ def index_pkgs(pkglist):
     """
     idx = {}
     for pkg in pkglist:
-        n,v,r,e,a = splitFilename(pkg)
-        pkgkey = "%s.%s" %(n,a)
+        n, v, r, e, a = splitFilename(pkg)
+        pkgkey = "%s.%s" % (n, a)
         current = idx.get(pkgkey, [])
         if pkg in current:
             continue
@@ -233,8 +233,8 @@ def errata_for_pkgs(rhnsession, pkgset):
         if pkg in seen:
             rhnsession.logDebug("already seen %s" % pkg)
             continue
-        n,v,r,e,a = splitFilename(pkg)
-        pkgobj = packages.findByNvrea(rhnsession,n,v,r,a,e)
+        n, v, r, e, a = splitFilename(pkg)
+        pkgobj = packages.findByNvrea(rhnsession, n, v, r, a, e)
         if pkgobj:
             # there really should only be one of these
             # but let's handle any other circumstances
@@ -260,7 +260,7 @@ def errata_for_pkgs(rhnsession, pkgset):
                     # add our erratum to the errata list
                     errset.add(myerr.get('advisory'))
                     # add all its other packages to our 'seen' list to avoid searching for them again
-                    errpkgs = set([ '%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errata.listPackages(rhnsession,myerr.get('advisory'))])
+                    errpkgs = set([ '%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s' % p for p in errata.listPackages(rhnsession, myerr.get('advisory'))])
                     seen.update(errpkgs)
                 else:
                     # we haven't found our packge on the satellite
@@ -298,7 +298,7 @@ def main(argv):
                                 logname = scriptname, loglevel=opts.loglevel,
                                 )
         else:
-            srcrhn = rhnclient
+            srcrhn = dstrhn
 
         # collect channel package lists
         dstrhn.logDebug("Getting package list for %s" % srcchan)

@@ -1,0 +1,488 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright YEAR AUTHOR
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+# customise this part
+scriptname = "spw-errata-import"
+__doc__ = """
+%s
+imports errata from a source channel (and/or its upstream clone original) into
+a chosen destination channel.
+Only imports errata that provide packages already in the channel
+""" % scriptname
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+import itertools
+from textwrap import TextWrapper
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel, packages, errata, utils
+from progressbar import ProgressBar, Bar, Counter, Percentage, Timer
+# from rhnapi import...
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+
+PKGINDEX = '~/.rhnapi/packageindex.json'
+NVRAFMT = "%(name)s-%(version)s-%(release)s.%(arch_label)s"
+BATCHSIZE = 50
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+    def error(errlines, exitcode = 1, print_help=True):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        if isinstance(errlines, list):
+            print "\n".join(errlines)
+        else:
+            print errlines
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """Finds all errata that provide packages in the chosen channel and optionally imports them."""
+
+    usagestr = "%prog [RHNOPTS] [-s SOURCE] [-u] [--report] CHANNEL"
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    changrp = OptionGroup(parser, "Group and Errata options")
+    changrp.add_option("-s", "--source", 
+        help="source channel for errata. Defaults to destination channel's clone original, if a cloned channel")
+    changrp.add_option("-i", "--packageindex", default=os.path.expanduser(PKGINDEX),
+        help="JSON-format package index for your destination satellite. Default: %default")
+    changrp.add_option("-u", "--upstream", action="store_true", default=False,
+        help="Also search 'upstream' channels for any missing errata")
+    changrp.add_option("-U", "--upstream-channel", help="channel label to use for upstream. Calculated if missing")
+    changrp.add_option("--report", action="store_true", default=False,
+        help="List errata and their effect and exit Does not sync anything.")
+    changrp.add_option("-c", "--current-only", action="store_true", default=False,
+        help="Skip errata that add new packages. Report on what they would have done.")
+    changrp.add_option("-b", "--batch-size", type="int", default=BATCHSIZE,
+        help="Number of errata to import in each clone action. Default: %default")
+    changrp.add_option("-I", "--import-from", dest="importfile",
+        help="import scan data from the specified JSON file. Assumes data is trustworthy")
+        
+    parser.add_option_group(changrp)
+
+
+    # by default
+    if len(argv) == 0:
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
+    if len(args) != 1:
+        error("ERROR: please provide one (and only one) destination channel to process", 1, False)
+
+    if opts.importfile:
+        opts.importfile = os.path.expanduser(opts.importfile)
+        if not os.path.isfile(opts.importfile):
+            error("ERROR: import file %s does not appear to exist" % opts.importfile, 1, False)
+
+
+    # finally...
+    return opts, args[0]
+        
+# ---------------------------------------------------------------------------- #
+
+def get_terminal_size():
+    import fcntl, termios, struct
+    h, w, hp, wp = struct.unpack('HHHH',
+        fcntl.ioctl(0, termios.TIOCGWINSZ,
+        struct.pack('HHHH', 0, 0, 0, 0)))
+    return w, h
+
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, destlabel = parse_cmdline(argv[1:])
+    termwidth, termheight = get_terminal_size()
+    # let's avoid going too crazy with progressbar and package listings
+    if termwidth > 100:
+        termwidth = 100
+
+
+    try:
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = scriptname, loglevel=opts.loglevel,
+                                )
+        # DO STUFF with your RHN session and commandline options
+
+        # does our destination channel exist?
+        destinfo = channel.getDetails(RHN, destlabel)
+        print "Processing packages and errata for channel %s" % destlabel
+
+        if not isinstance(destinfo,dict):
+            RHN.logError("Destination channel %s does not appear to exist" % destlabel)
+            sys.exit(2)
+
+        # find a source channel for 
+        if opts.source:
+            sourcelabel = opts.source
+            RHN.logInfo("Using provided channel %s as source" % sourcelabel)
+        else:
+            # use the channel's clone_original. If it has one.
+            sourcelabel = destinfo.get('clone_original', '').strip()
+            if len(sourcelabel) > 0:
+                RHN.logInfo("Using clone original %s as source" % sourcelabel)
+            else:
+                RHN.logError("Destination %s is not a cloned channel and you have not provided a source channel for errata" % destlabel)
+                sys.exit(2)
+
+        sourceinfo = channel.getDetails(RHN, sourcelabel)
+        if isinstance(sourceinfo,dict):
+            # yay, the channel exists.
+            # to ensure it has a value
+            has_upstream = False
+            if opts.upstream:
+                if opts.upstream_channel:
+                    if channel.getDetails(RHN, opts.upstream_channel):
+                        upstreamlabel = opts.upstream_channel
+                    else:
+                        has_upstream = False
+                else:
+                    upstreamlabel = sourceinfo.get('clone_original', '').strip()
+
+                if len(upstreamlabel) != 0:
+                    has_upstream = True
+                else:
+                    RHN.logWarn("--upstream specified, but source channel %s is not a clone. Ignoring it" % sourcelabel)
+                    has_upstream = False
+        else:
+            RHN.logError("Provided Source channel %s does not appear to exist" % sourcelabel)
+            sys.exit(3)
+
+
+
+        if opts.importfile:
+            # do stuff with your import
+            importdata = utils.loadJSON(opts.importfile)
+            if not importdata:
+                print "ERROR: unable to load scan info from %s"
+                sys.exit(4)
+            # structure
+#             reportdict = {
+#                     'label'      : destlabel,
+#                     'srclabel'   : sourcelabel,
+#                     'errata'     : err_to_sync,
+#                     'erratapkgs' : seenpkgs,
+#                     'nonerrpkgs' : nonerrpkgs,
+#                     'extrapkgs'  : additionalpkgs,
+#                     'pkgsbyerrata' : pkgsbyerratum,
+#                     'partialerrata' : othersrcpkgs,
+#                     }
+            err_to_sync = set(importdata.get('errata'))
+            seenpkgs = set(importdata.get('erratapkgs'))
+            nonerrpkgs = set(importdata.get('nonerrpkgs'))
+            additionalpkgs = set(importdata.get('extrapkgs'))
+            pkgsbyerratum = importdata.get('pkgsbyerrata')
+            othersrcpkgs = importdata.get('partialerrata')
+
+        else:
+            # we have to scan all our data!
+            # now we've checked our inputs, let's do some investigation
+            destpkgs = channel.listAllPackages(RHN, destlabel)
+            # index destination packages on NVRA. Don't care about epoch.
+            destpkgindex = dict(zip((NVRAFMT % p for p in destpkgs),destpkgs))
+            RHN.logInfo("Got %d unique packagenames for channel %s" %(len(destpkgindex), destlabel))
+
+            # just in case there already are any errata in the channel
+            # this helps with reporting later
+            desterr = channel.listErrata(RHN, destlabel)
+            srcerr = channel.listErrata(RHN, sourcelabel)
+
+            desterrids = set(e.get('advisory') for e in desterr)
+
+            srcerrids = set(e.get('advisory') for e in srcerr)
+
+            if has_upstream:
+                upstrmerr = channel.listErrata(RHN, upstreamlabel)
+                upstrmerrids = set(e.get('advisory') for e in upstrmerr)
+            else:
+                upstrmerr = []
+                upstrmerrids = set()
+
+
+            # now we should walk over the packages in our channel and
+            # a) find the errata they come from
+            # b) get the rest of the packages from that erratum
+            # c) diff them against the source channel
+            # d) find any other packages they would add (for reporting)
+            # e) find any other channels they affect.
+    # scan            
+            # let's have somewhere to store packages we've seen
+            seenpkgs = set()
+            # to store currently absent packages 
+            additionalpkgs = set()
+            # to store 
+            nonerrpkgs = set()
+            othersrcpkgs = {}
+            pkgsbyerratum = {}
+            
+            err_to_sync = set()
+
+            numpkgs = len(destpkgindex)
+
+            print "%d packages to consider" % numpkgs
+            scanwidgets = [ "Packages: ", Counter(format="%5d"), "/%d" % numpkgs,
+                            Percentage(), Bar(), Timer() ]
+
+            counter = 0
+            pbar = ProgressBar(widgets=scanwidgets, maxval=numpkgs, term_width=termwidth).start()
+            for pkgstr, pkgobj in destpkgindex.iteritems():
+                # increment counter
+                counter += 1
+                # if we've already looked at this package
+                # or found it from an earlier erratum search
+                if pkgstr in seenpkgs:
+                    continue
+                # for ease of reporting
+                pkgid = pkgobj.get('id')
+                # set of matching errata names
+                pkgerr = set(e.get('advisory') for e in packages.listProvidingErrata(RHN, pkgid))
+                RHN.logInfo("Found %d errata providing %s" %(len(pkgerr), pkgstr))
+                # compare the errata list against our 3 channels
+                # destination
+                destmatches = pkgerr.intersection(desterrids)
+                # source
+                srcmatches = pkgerr.intersection(srcerrids)
+                # upstream (of source)
+                upstrmatches = pkgerr.intersection(upstrmerrids)
+
+                # erratum is not already in my channel
+                already_synced = False
+                # none of these should never be more than 1, really. 
+                # A package in a channel should not come from more than one erratum
+                if len(destmatches) > 0:
+                    # erratum is already in dest channel
+                    RHN.logDebug("Found %d errata for package %s in channel %s" %(len(destmatches), pkgstr, destlabel))
+                    already_synced = True
+                    myerr = destmatches.pop()
+                elif len(srcmatches) > 0:
+                    # erratum comes from source channel
+                    myerr = srcmatches.pop()
+                    RHN.logDebug("Found %d errata for package %s in channel %s" %(len(srcmatches), pkgstr, sourcelabel))
+                elif len(upstrmatches) > 0:
+                    # erratum comes from upstream channel
+                    RHN.logDebug("Found %d errata for package %s in channel %s" %(len(srcmatches), pkgstr, sourcelabel))
+                    myerr = upstrmatches.pop()
+                else:
+                    RHN.logDebug("Cannot find a matching erratum for pkg %s (%d)" %(pkgstr, pkgid))
+                    seenpkgs.add(pkgstr)
+                    nonerrpkgs.add(pkgstr)
+                    continue
+
+                # err_to_sync.add(myerr)
+                RHN.logInfo("Processing erratum %s for package %s" % (myerr, pkgstr))
+                errpkgs = errata.listPackages(RHN, myerr)
+                RHN.logDebug("%s provides %d packages across all applicable channels" % (myerr, len(errpkgs)))
+
+                # find those packages that are already in our destination channel
+                matchingpkgs = set(NVRAFMT % p for p in errpkgs if destlabel in p.get('providing_channels'))
+                RHN.logDebug("Found %d packages that are in %s" %(len(matchingpkgs), destlabel))
+                pkgsbyerratum[myerr] = matchingpkgs
+                seenpkgs.update(matchingpkgs)
+
+                # what about packages from the erratum that are in our source channel, but not our dest.
+                # ideally this wouldn't happen, but if packages are added without using errata, it's possible
+                unpushedpkgs = set(NVRAFMT % p for p in errpkgs if sourcelabel in p.get('providing_channels'))
+
+                # let's ignore any that are already in my channel, we know about those:
+                unpushedpkgs.difference_update(matchingpkgs)
+                if len(unpushedpkgs) > 0:
+                    RHN.logDebug("Found %d unsynced packages for erratum %s" %(len(unpushedpkgs), myerr))
+                    othersrcpkgs[myerr] = unpushedpkgs
+                    additionalpkgs.update(unpushedpkgs)
+                    err_to_sync.add(myerr)
+                elif not already_synced:
+                    # packages present, but erratum not.
+                    RHN.logInfo("All %d packages from erratum %s already in channel %s, but erratum not present, syncing it" %(len(matchingpkgs), myerr, destlabel))
+                    err_to_sync.add(myerr)
+                else:
+                    # both packages and erratum are present
+                    RHN.logInfo("Already have %d pkgs from erratum %s in %s. Nothing to do" % (len(matchingpkgs), myerr, destlabel))
+                pbar.update(counter)
+            print
+                    
+            reportdict = {
+                    'label'      : destlabel,
+                    'srclabel'   : sourcelabel,
+                    'errata'     : err_to_sync,
+                    'erratapkgs' : seenpkgs,
+                    'nonerrpkgs' : nonerrpkgs,
+                    'extrapkgs'  : additionalpkgs,
+                    'pkgsbyerrata' : pkgsbyerratum,
+                    'partialerrata' : othersrcpkgs,
+                    }
+
+            utils.dumpJSON(reportdict, '%s-import-report.json' % destlabel)
+                    
+    # end scan
+        if opts.report:
+            # finally, let's do a report...
+            print "Scan results"
+            print "============"
+            print "Errata to be imported:    %5d" % len(err_to_sync)
+            print "Packages from errata:     %5d" % len(seenpkgs)
+            print "Packages not from errata: %5d" % len(nonerrpkgs)
+            print "New packages from errata: %5d" % len(additionalpkgs)
+            print "Partilly imported Errata: %5d" % len(othersrcpkgs)
+            if len(othersrcpkgs) > 0:
+                wrapper = TextWrapper(width=termwidth,
+                                      initial_indent="",
+                                      subsequent_indent="              ")
+                print "Partially synchronised Errata"
+                print "-----------------------------"
+                for k, plist in othersrcpkgs.iteritems():
+                    if pkgsbyerratum.has_key(k):
+                        print "Erratum: %s" % k
+                        print "current pkgs: ", "\n".join(wrapper.wrap(" ".join(pkgsbyerratum[k])))
+                        print "new packages: ", "\n".join(wrapper.wrap(" ".join(plist)))
+        else:
+            # okay, let's get serious with the errata thingy
+            print "Synchronising errata"
+            erratalist = err_to_sync
+            if opts.current_only:
+                print "excluding errata that would add new packages"
+                skipme = set(othersrcpkgs.keys())
+                erratalist.difference_update(skipme)
+
+            # successfully cloned errata
+            errdone = set()
+            # failed errata, if any
+            errfailed = set()
+            if len(erratalist) > 0:
+                print "Importing / Cloning %d errata in batches of %d" % (len(erratalist), opts.batch_size)
+                print "This could be a slow process"
+                errwidgets = [ "Errata: ", Counter(format="%5d"), "/%d " % len(erratalist),
+                                Percentage(), Bar(), Timer() ]
+
+    # pasted in                            
+                counter = 0
+                pbar = ProgressBar(widgets=errwidgets, maxval=len(erratalist), term_width=80).start()
+                # in case any fail to clone...
+                # ensure we don't attempt to reclone existing errata when updating
+                for batch in utils.batch_iterate(sorted(list(erratalist)), opts.batch_size):
+    #                cleanbatch = [ e for e in batch if e is not None ]
+                    RHN.logDebug("Attempting to clone %s" % ','.join(batch))
+                    newerr = errata.cloneAsOriginal(RHN, destlabel, batch)
+                    if len(newerr) != len(batch):
+                        # figure out which ones failed...
+                        # this gives the YYYY:NNNN parts which should be the same.
+                        # in a cloned erratum
+                        worked = set(e.get('advisory').split('-')[1] for e in newerr)
+                        for interr in batch:
+                            # if interr.split('-')[1] not in worked:
+                            if utils.get_errid(interr) not in worked:
+                                RHN.logDebug("failed to add %s" % interr)
+                                errfailed.add(interr)
+                    counter += len(batch)
+                    pbar.update(counter)
+                print
+
+            else:
+                print "No errata to synchronise"
+                
+                # did anything fail to clone?
+            if len(errfailed) > 0:
+                print "failed to synchronise %d errata" % len(errfailed)
+
+            # finally, let's summarise:
+            # print "Synchronisation Summary"
+            # print "-----------------------"
+            
+
+
+            
+        
+
+
+
+
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+    
+if __name__ == '__main__':
+    main(sys.argv)
+
+
+
+# footer - do not edit below here
+# vim: set et cindent ts=4 sts=4 sw=4 ft=python:
