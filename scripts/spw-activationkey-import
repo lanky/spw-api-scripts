@@ -179,7 +179,7 @@ def create_activation_key(rhn, keyinfo, interactive = False, verbose = False):
 
         if len(keyinfo['entitlements']) > 0:
             rhn.logInfo("Adding entitlements '%s' to key" % ','.join(keyinfo['entitlements']) )
-            if activationkey.addEntitlements(RHN,keyid, keyinfo['entitlements']):
+            if activationkey.addEntitlements(rhn,keyid, keyinfo['entitlements']):
                 rhn.logDebug("Entitlements set appropriately")
 
         # add the key to our global activation key list to avoid having to do this again
