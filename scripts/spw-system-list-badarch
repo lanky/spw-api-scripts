@@ -37,10 +37,10 @@ import time
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
-from rhnapi import system
+from rhnapi import system, utils
 
 # progressbar
-from progressbar import Counter,Percentage,ProgressBar, Timer, AnimatedMarker, Bar
+from progressbar import Counter, Percentage, ProgressBar, Timer, AnimatedMarker, Bar
 
 
 # --------------------------- Script Configuration --------------------------- #
@@ -121,10 +121,10 @@ def system_table(syslist, sortkey, reverse=False):
     fmtstr = "%%(id)-%(id)dr %%(name)-%(name)ds %%(last_checkin)-%(last_checkin)ds %%(base_channel)-%(base_channel)ds" % maxlen
     print fmtstr % {'id' : 'System ID', 'name' : 'System Name', 'last_checkin' : 'Last Checkin Date', 'base_channel' :  'Base Software Channel'}
     print fmtstr % {'id' : '---------', 'name' : '-----------', '------------' : '-----------------', '------------' :  '---------------------'}
-    pretty_system_list(failed_systems, 'name', reverse=False)
+    # pretty_system_list(failed_systems, 'name', reverse=False)
     for box in sorted(syslist, key = itemgetter(sortkey), reverse = reverse):
         print fmtstr % box
-        print "%-12d %-22s %-18s %s" %(system['id'], system['name'], lcheck, system['base_channel'])
+#         print "%-12d %-22s %-18s %s" %(system['id'], system['name'], lcheck, system['base_channel'])
 
 
 
@@ -181,7 +181,7 @@ def main():
 
         if len(failed_systems) > 0:
             print "Found %d systems with 'unknown' arch packages" % len(failed_systems)
-            system_table(failed_system, sortkey, opts.reverse)
+            system_table(failed_systems, sortkey, opts.reverse)
         else:
             print "No systems found with 'unknown' arch packages"
 
