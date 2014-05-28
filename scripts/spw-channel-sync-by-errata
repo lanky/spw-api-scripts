@@ -41,7 +41,7 @@ except ImportError:
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
-from rhnapi import channel, errata, packages
+from rhnapi import channel, errata, packages, utils
 
 from progressbar import Counter, Percentage, ProgressBar, Timer, Bar
 # ------------------------- Docstring and file info -------------------------- #
@@ -331,33 +331,6 @@ def list_groups(groupdata, grouppattern=None, padding=30):
 
 # ---------------------------------------------------------------------------- #
 
-def get_pkgstr(pkgobj):
-    """
-    get an E:NVR.A string for the given package object
-    """
-    fragments = [ "%(name)s-%(version)s-%(release)s" ]
-    epoch = pkgobj.get('epoch', '').strip()
-    if len(epoch) != 0:
-        fragments.insert(0, "%(epoch)s:")
-    if pkgobj.get('arch_label', False):
-        fragments.append(".%(arch_label)s")
-    else:
-        fragments.append(".%(arch)s")
-
-    return ''.join(fragments) % pkgobj
-
-# ---------------------------------------------------------------------------- #
-
-def get_errid(errobj):
-    """
-    returns the YYYY:NNNN part for an erratum
-    """
-    adv = errobj.get('advisory')
-    # advisories are 'RHSA-YYYY:NNNN-N', we want the middle bit.
-    return adv.split('-')[1].strip()
-
-# ---------------------------------------------------------------------------- #
-
 def package_diff(rhn, chan1, chan2, latestonly=False, pkgs1=None):
     """
     does a one-way diff of packages from chan1 to chan2
@@ -385,13 +358,14 @@ def package_diff(rhn, chan1, chan2, latestonly=False, pkgs1=None):
         print "  - %d packages in %s" % ( len(pkgs1), chan1)
     
 
-    pkgindex1 = dict(zip((get_pkgstr(p) for p in pkgs1), pkgs1))
+    # pkgindex1 = dict(zip((utils.get_pkgstr(p) for p in pkgs1), pkgs1))
+    pkgindex1 = utils.index_dictlist(pkgs1, utils.get_pkgstr) 
     pkgnames1 = set(pkgindex1.keys())
 
     rhn.logDebug("Got %d packages in channel %s" %(len(pkgs1), chan1))
 
     pkgs2 = channel.listAllPackages(rhn, chan2)
-    pkgnames2 = set(get_pkgstr(p) for p in pkgs2)
+    pkgnames2 = set(utils.get_pkgstr(p) for p in pkgs2)
     print "  - %d packages in %s" % (len(pkgs2), chan2)
 
     rhn.logDebug("Got %d packages in channel %s" %(len(pkgs2), chan2))
@@ -442,8 +416,8 @@ def errata_diff(rhn, chan1, chan2, errlist1=None):
 
     # but what if they're clones?
     # index on errid, mapping the YYYY:NNNN parts to their original dicts
-    idindex1 = dict(zip((get_errid(e) for e in errlist1 if e.get('advisory') in ldiff), errlist1))
-    idindex2 = dict(zip((get_errid(e) for e in errlist2 if e.get('advisory') in ldiff), errlist2))
+    idindex1 = dict(zip((utils.get_errid(e) for e in errlist1 if e.get('advisory') in ldiff), errlist1))
+    idindex2 = dict(zip((utils.get_errid(e) for e in errlist2 if e.get('advisory') in ldiff), errlist2))
 
     # let's process all the errata in our with common ERRIDs
     errid_matches = set(idindex1.keys()).intersection(idindex2.keys())
@@ -498,7 +472,7 @@ def find_errata_packages(rhn, sourcechannel, errset, pkgset):
         rhn.logDebug("Processing erratum %s" % errname)
         errpkgs = errata.listPackages(rhn, errname)
         # find errata packages from our source channel
-        src_pkgs = set(get_pkgstr(p) for p in errpkgs if sourcechannel in p.get('providing_channels'))
+        src_pkgs = set(utils.get_pkgstr(p) for p in errpkgs if sourcechannel in p.get('providing_channels'))
         rhn.logDebug("%s provides %d packages of which %d are in source channel" %(errname, len(errpkgs), len(src_pkgs)))
         # this will allow us to dump errata that *only* provide packages not in our list
         matchingpkgs = src_pkgs.intersection(pkgset)
@@ -649,7 +623,8 @@ def main(argv):
 
             # 
             if opts.latest:
-                allsrcidx = dict(zip((get_pkgstr(p) for p in allsrcpkgs), allsrcpkgs))
+                # allsrcidx = dict(zip((get_pkgstr(p) for p in allsrcpkgs), allsrcpkgs))
+                allsrcidx = utils.index_dictlist(allsrcpkgs, utils.get_pkgstr)
             else:
                 allsrcidx = srcidx
 
@@ -751,27 +726,27 @@ def main(argv):
                 reportlines = gen_report(channelmaps)
                 if opts.output:
                     try:
-                        try:
-                            RHN.logInfo("outputting report to %s" % opts.output)
-                            fd = open(opts.output, 'wb')
-                            if opts.group:
-                                fd.write("Channel Group: %s\n" % opts.group)
-                            fd.write('\n'.join(reportlines))
-                            sys.exit(0)
-                        except OSError, E:
-                            RHN.logError("Unable to create/write to output file %s" % opts.output)
-                            RHN.logError("Error was: %s" % E.strerror)
-                            print "Failed to create %s - %s" % (opts.output, E.strerror)
-                            sys.exit(255)
-                        except IOError, E:
-                            RHN.logError("Unable to create/write to output file %s" % opts.output)
-                            RHN.logError("Error was: %s" % E.strerror)
-                            print "Failed to create %s - %s" % (opts.output, E.strerror)
-                            sys.exit(255)
-                        
-                    finally:
                         print "writing output to %s" % opts.output
+                        RHN.logInfo("outputting report to %s" % opts.output)
+                        fd = open(opts.output, 'wb')
+                        if opts.group:
+                            fd.write("Channel Group: %s\n" % opts.group)
+                        fd.write('\n'.join(reportlines))
                         fd.close()
+                        sys.exit(0)
+                    except OSError, E:
+                        RHN.logError("Unable to create/write to output file %s" % opts.output)
+                        RHN.logError("Error was: %s" % E.strerror)
+                        print "Failed to create %s - %s" % (opts.output, E.strerror)
+                        sys.exit(255)
+                    except IOError, E:
+                        RHN.logError("Unable to create/write to output file %s" % opts.output)
+                        RHN.logError("Error was: %s" % E.strerror)
+                        print "Failed to create %s - %s" % (opts.output, E.strerror)
+                        sys.exit(255)
+                    except:
+                        RHN.logError("Unable to create/write to output file %s" % opts.output)
+                        raise
                 # test/report mode without output file, print report instead
                 else:
                     print '\n'.join(reportlines)
@@ -840,7 +815,8 @@ def main(argv):
 
                         for ind, pberr in enumerate(publishme):
                             RHN.logDebug("publishing %s (%s)" % pberr)
-                            res = errata.publishAsOriginal(RHN, pberr[0], [ destchannel ])
+                            # update to use cloning for *everything* as it is harmless.
+                            res = errata.cloneAsOriginal(RHN, destchannel, [ pberr[0] ])
                             if res:
                                 RHN.logInfo("Published %s" % pberr[0])
                             else:
