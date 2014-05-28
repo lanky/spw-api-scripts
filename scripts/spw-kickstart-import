@@ -39,6 +39,7 @@ import os
 import re
 from optparse import OptionParser, OptionGroup
 from pprint import pprint
+from fnmatch import fnmatch
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
@@ -705,7 +706,8 @@ def main():
                 RHN.logWarn("Kickstart distribution %(tree_label)s already exists, using it." % ksobject )
                 RHN.logWarn("Be sure to check it points to the correct installation tree.")
             else:
-                if not create_kickstart_tree(RHN, ksobject.get('ks_tree')):
+                treeobj = ksobject.get('ks_tree')
+                if not create_kickstart_tree(RHN, treeobj):
                     RHN.logError("error creating tree %(label)s - you may need to create this manually" % treeobj)
                     sys.exit(1)
 
