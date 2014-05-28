@@ -42,7 +42,7 @@ from optparse import OptionParser, OptionGroup
 from itertools import izip, chain, repeat
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
-from rhnapi import channel, errata, packages
+from rhnapi import channel, errata, packages, utils
 
 from progressbar import ProgressBar
 # widgets to use later
@@ -149,33 +149,6 @@ def parse_cmdline(argv):
     return opts, args
         
 # ---------------------------------------------------------------------------- #
-
-def batch_iterate(iterable, batchsize, padvalue=None):
-    """
-    takes an arbitrary iterable (list, set, string etc) and returns an iterator
-    that yields the input in fixed size batches (e.g. split a list into groups of
-    50 items for batch processing)
-
-    Shamelessly based on this:
-    http://stackoverflow.com/questions/312443/
-    and the recipes here: (for "grouper")
-    http://docs.python.org/2/library/itertools.html?highlight=itertools#recipes
-    
-    parameters:
-    iterable        - an iterable object, such as a set or list
-    batchsize       - the number of elements to return in each batch
-    padvalue        - "padding" character to fill shorter slices 
-                      up to batchsize (not required)
-
-    returns:
-    generator/iterator object, which we can loop over.
-    raises StopIteration at end
-    """
-    return izip(*[chain(iterable, repeat(padvalue, batchsize-1))]*batchsize)
-    # return izip(*[chain(iterable)]*batchsize)
-
-# ---------------------------------------------------------------------------- #
-
 
 def get_errata_for_pkglist(rhn, src_errata, dst_pkgs, dst_errata):
     """
@@ -289,8 +262,8 @@ def batch_import_errata(rhn, dest, errata_list, batch_size=50):
     if len(clone_list) > 0:
         print "Cloning %d errata in batches of %d" %(len(clone_list), batch_size)
         # progressbar components:
-        # progress: X / Y Errata [ Z% ] ####    ( 00:03:56 ]
-        widgets = ['progress: ', Counter(), 
+        # progress: X / Y Errata [ Z% ] ####    ( 00:03:56 )
+        widgets = ['progress: ', Counter(format="%5d"), 
                    '/ %d Errata ' % len(clone_list), 
                    '[ ', Percentage(), ' ]', 
                    Bar(), 
@@ -301,7 +274,7 @@ def batch_import_errata(rhn, dest, errata_list, batch_size=50):
                            term_width=80).start()
         counter = 0
         # let's process our list of errata to clone
-        batchiter = batch_iterate(clone_list, batch_size)
+        batchiter = utils.batch_iterate(clone_list, batch_size)
         # we could use a progressbar here, I suppose
         for errbatch in batchiter:
             clonelist = [ e for e in errbatch if e is not None ]
@@ -352,20 +325,14 @@ def reduce_errata(src_err, dst_err):
     A hacky way to compare two lists of errata objects.
     we map advisory names by their date
     """
-
-    # the function I want to use to generate an index.
-    def adv_date(eobj):
-        return e.get('advisory').split('-')[1]
-
     # so, how does this work
     # 1. match advisory_names by their YYYY-NNNN parts
     # 2. compare advisory synopses
-    src_idx = gen_index_func(src_err, adv_date)
-    dst_idx = gen_index_func(dst_err, adv_date)
+    src_idx = gen_index_func(src_err, utils.get_errid)
+    dst_idx = gen_index_func(dst_err, utils.get_errid)
     pass
 
-    
-
+# ---------------------------------------------------------------------------- #
 
 def gen_index_func(dictlist, idxfunc):
     """
@@ -385,6 +352,8 @@ def gen_index_func(dictlist, idxfunc):
             results[key] = [ d ]
 
     return results
+
+# ---------------------------------------------------------------------------- #
 
 def gen_index(dictlist, idxexpr):
     """
@@ -413,6 +382,7 @@ def gen_index(dictlist, idxexpr):
     # this only works if the keys chosen are unique across the entire
     return dict(zip(keys, dictlist))
 
+# ---------------------------------------------------------------------------- #
 
 def main(argv):
     """
