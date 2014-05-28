@@ -1,0 +1,586 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# RHN/Spacewalk XMLRPC API script
+# ** delete as appropriate below **
+# requires the python-rhnapi and python-progressbar modules
+# requires the python-rhnapi module
+#
+# Copyright YEAR AUTHOR
+#
+# This file is part of spw-api-scripts
+#
+# spw-api-scripts is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 2 of the License, or (at your option)
+# any later version.
+#
+# spw-api-scripts is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+# for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
+
+# customise this part
+scriptname = "spw-channel-import"
+__doc__ = """
+%s
+import/create a channel from a package dump.
+Imports errata too
+""" % scriptname
+__author__ = "Stuart Sears <stuart.sears@man.com>"
+
+# --------------------- Python Standard Library Modules ---------------------- #
+import os
+import sys
+from optparse import OptionParser, OptionGroup
+from operator  import itemgetter
+# to handle batch processing of imports
+import itertools
+
+# -------------------------- Custom Python Modules --------------------------- #
+import rhnapi
+from rhnapi import channel, errata, utils, packages
+from progressbar import ProgressBar, Timer, Counter, Percentage, Bar
+# from rhnapi import...
+# -------------------------- RHN API Configuration --------------------------- #
+
+# server hostname and config file location
+RHNCONFIG = '~/.rhninfo'
+RHNHOST = 'localhost'
+
+# authentication information
+# put these in your configfile, dammit;
+RHNUSER = None
+RHNPASS = None
+
+
+# --------------------------- Script Configuration --------------------------- #
+# put global variables for the script in here
+PKGINDEX = os.path.expanduser('~/.rhnapi/packageindex.json')
+# number of packages/errata to add in each batch
+BATCH_SIZE = 10
+
+# ---------------------------------------------------------------------------- #
+
+def parse_cmdline(argv):
+    """
+    process and check commandline options and arguments.
+    Called against sys.argv[1:] to ignore the script name itself.
+    """
+    def error(errlines, exitcode = 1):
+        """
+        parser-specific error handling
+        params:
+        errlines(list)      - list (or tuple/set) of lines in error message
+        exitcode(int)       - return code for exit statement.
+        """
+        if isinstance(errlines, list):
+            print "\n".join(errlines)
+        else:
+            print errlines
+        parser.print_help()
+        sys.exit(exitcode)
+
+    preamble = """create a new channel from a packagelist, reports on missing packages.
+
+Also imports errata where it can determine these.
+
+"""
+
+    usagestr = "%prog [RHNOPTS] -c CHANNEL -i PACKAGEINDEX DUMPFILE"
+    
+    # initialise our parser and set some default options
+    parser = OptionParser(usage = usagestr, description = preamble)
+    parser.add_option("--debug", action = "store_true", default = False,
+        help = "enable debug output for RHN session (XMLRPC errors etc.) Sets loglevel to DEBUG.")
+    parser.add_option('-v', '--verbose', action = 'store_true', default = False,
+        help = "increase verbosity. Sets loglevel to INFO")
+
+    # RHN Satellite options group
+    rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
+    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
+    rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
+    rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
+    rhngrp.add_option("--cache", action = "store_true", default = False,
+        help = "save usernames and password in config file, if missing")
+    rhngrp.add_option("--log", dest = "logfile", default = None,
+        help = "log output to the given filename. If you enable logging without this, logs go to stderr")
+    parser.add_option_group(rhngrp)
+
+    # script-specific options - put these in their own OptionGroup
+    # e.g.
+    changrp = OptionGroup(parser, "Channel Options")
+    changrp.add_option("-c", "--channel", help="Channel to create (LABEL)")
+    changrp.add_option("-p", "--parent",
+        help="Parent channel label, if creating a child channel. Parent must already exist")
+    changrp.add_option("-i", "--index", default=PKGINDEX,
+        help="Location of JSON-format package index file, create this with spw-package-index first [%default]")
+    changrp.add_option("-s", "--source", help="source channel LABEL for importing errata")
+#    changrp.add_option("-n","--no-errata", action="store_true", default=False,
+#        help="Do not import errata at all, just create the channel from a package list")
+    changrp.add_option("-u","--update", action="store_true", default=False,
+        help="If target channel exists, update it in place. This can be dangerous")
+    changrp.add_option("-b","--batch-size", type="int", default=BATCH_SIZE,
+        help="Number of packages/errata to add in each run. Smaller = more API calls, but more output")
+    changrp.add_option("--test", action="store_true", default=False,
+        help="Don't create the channel at all, just report on what would be done")
+    parser.add_option_group(changrp)
+
+
+    # by default
+    if len(argv) == 0:
+        parser.print_help()
+        sys.exit(0)
+
+    opts, args = parser.parse_args(argv)
+    # check the args for errors etc...
+    if opts.debug:
+        opts.loglevel = 10
+    elif opts.verbose:
+        opts.loglevel = 20
+    else:
+        opts.loglevel = 30
+
+    if len(args) != 1:
+        error (["ERROR: please provide a single package list file in E:NVR.A format",
+                "(you can generate this on a satellite using spw-channel-dumppackagelist"],
+                1)
+
+    elif not os.path.isfile(os.path.expanduser(args[0])):
+        error("ERROR: no such file : %s" % args[0], 1)
+
+    # finally...
+    return opts, args
+        
+# ---------------------------------------------------------------------------- #
+
+def compare_errata_lists(local_errata, remote_errata, logger=None):
+    """
+    Process 2 lists of errata, returning matches, unmatched and a diff.
+    parameters:
+        local_errata (list/dict): list of errata dict objects from the API
+                                  Usually a list of exising errata from a channel
+        remote_errata  (list/dict): list of errata dict objects from the API
+                                  usually a list of cloned errata from another satellite.
+    returns:
+        matches(set):    list of errata in errlist1 one that correspond to errlist2
+        missing(set):    list of errata in errlist2 that don't map to errlist1
+        mismatched(set): list of errata in errlist2 with the same date identifier
+                         as an entry from errlist1, but a different synopsis
+    """
+    # first we get the 'date' IDs (e.g. 2014:1336)
+    localindex = index_dictlist(local_errata,key=get_errid)
+    remindex = index_dictlist(remote_errata,key=get_errid)
+
+    # errids that are not in errlist1
+    localids = set(localindex.keys())
+    remoteids = set(remindex.keys())
+    missing = remoteids.difference(localids)
+
+    if logger:
+        logger.debug("Got %d local errata" % len(localids))
+        logger.debug("Got %d remote errata" % len(remoteids))
+        logger.debug("Got %d missing errata (remote but not local)" % len(missing))
+    # will have local advisories that match a remote one
+    matches = set()
+    broken = set()
+
+    possibles = localids.intersection(remoteids)
+    if len(possibles) > 0:
+        errwidgets = [ "Errata: ", Counter(format="%4d"), "/%-4d" % len(possibles), 
+                       Percentage(), Bar(), Timer() ]
+        pbar = ProgressBar(widgets=errwidgets, maxval=len(possibles), term_width=80).start()
+
+        for counter, errid in enumerate(possibles):
+            if localindex[errid].get('synopsis') == remindex[errid].get('synopsis'):
+                matches.add(localindex[errid].get('advisory'))
+            else:
+                # just the ids, really - we can search for them in the web interface
+                broken.add(errid)
+            pbar.update(counter +1)
+        
+        pbar.update(counter +1)
+        print
+
+    return matches, missing, broken
+
+# ---------------------------------------------------------------------------- #
+
+def get_pkgstr(pkgobj, newline=False):
+    """
+    return E:NVR.A or NVR.A appropriately for a given pkg dict
+    """
+
+    if pkgobj.get('epoch','').strip() == '':
+        return "%(name)s-%(version)s-%(release)s.%(arch_label)s" % pkgobj
+    else:
+        return "%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s" % pkgobj
+
+# ---------------------------------------------------------------------------- #
+
+def get_errid(errobj):
+    """
+    fetch the YYYY:NNNN part from an errata dict object
+    """
+    return errobj.get('advisory').split('-')[1]
+
+# ---------------------------------------------------------------------------- #
+
+def index_dictlist(dictlist, key):
+    """
+    generate an index for a list of dict, using a key function.
+    key MUST be a function that can take a dict as an argument.
+    """
+    try:
+        return dict( zip ((key(entry) for entry in dictlist), dictlist))
+    except:
+        return None
+
+
+# ---------------------------------------------------------------------------- #
+def reduce_errata(erratalist1, erratalist2):
+    """
+    returns all elements in erratalist2 that are not in erratalist1 by comparing
+    Errata IDs (the YYYY:NNNN parts) and synopses
+    This would be a simple "difference_update" if we only compared the YYYY:NNNN
+    strings.
+
+    parameters:
+        erratalist1(list of dict): list of dicts, one per erratum
+        erratalist2(list of dict): list of dicts, one per erratum
+
+    returns:
+        list of dict
+    """
+    index1 = index_dictlist(erratalist1, key=get_errid)
+    index2 = index_dictlist(erratalist2, key=get_errid)
+
+    results = []
+    for errid, err1 in index2.iteritems():
+        # try and find our current id in 
+        err2 = index1.get(errid)
+        if err2 is not None and err2['synopsis'] == err1['synopsis']:
+            continue
+        else:
+            # the current erratum doesn't match.
+            results.append(err1)
+
+    return results
+
+
+# ---------------------------------------------------------------------------- #
+
+def get_noun(what, count):
+    """
+    returns the singular or plural noun for package(s) or errat(um|a)
+    """
+    if count <= 0:
+        return what
+    if what == "errata":
+        if count == 1:
+            return "erratum"
+        else:
+            return "errata"
+
+    if what == "package":
+        if count > 1:
+            return "packages"
+        else:
+            return "package"
+
+
+# ---------------------------------------------------------------------------- #
+
+
+def main(argv):    
+    opts, args = parse_cmdline(argv[1:])
+
+    inputfile = args[0]
+
+    if opts.test:
+        print "Running in TEST MODE. No changes will be made"
+
+    try:
+
+        RHN = rhnapi.rhnSession(opts.server, opts.login, opts.password,
+                                config=opts.config, savecreds=opts.cache, debug=opts.debug,
+                                logfile = opts.logfile, logenable = True,
+                                logname = scriptname, loglevel=opts.loglevel,
+                                )
+        # DO STUFF with your RHN session and commandline options
+        # get my locally generated package index
+        if os.path.isfile(opts.index):
+            pkgindex = utils.loadJSON(opts.index)
+        else:
+            print "no such file: %s" % opts.index
+            sys.exit(2)
+
+        # now we import from JSON
+        importdata = utils.loadJSON(inputfile)
+        if not importdata:
+            print "cannot load JSON from %s"
+            sys.exit(255)
+        # our source data is in this format:
+        # { 'label'       : channellabel,
+        #   'errata'      : list of errata objects
+        #   'packages'    : list of non-errata packages
+        #   'allpackages' : all packages from source channel, just in case :)
+        #    other keys as in a standard channel.getDetails call
+        # }
+        if opts.test:
+            print "Details from JSON import"
+            print "------------------------"
+            print "Label:         %(label)s" % importdata
+            print "Name:          %(name)s" % importdata
+            if importdata.get('parent_channel_label', '') == '':
+                print "Parent:        None (base channel)"
+            else:
+                print "Parent:        %(parent_channel_label)s" % importdata
+            if importdata.get('clone_original', '').strip() == '':
+                print "Cloned from:   None (imported or created manually)"
+            else:
+                print "Cloned from:   %(clone_original)s" % importdata
+            print "Package Count: %d" % len(importdata.get('allpackages'))
+            print 
+
+# --------------------- Process Errata from JSON import ---------------------- #
+
+        # did we ask for a specific label?
+        # if not, use the one from our JSON import data
+        if opts.channel:
+            target_label = opts.channel
+            RHN.logInfo("using channel label %s from opts" % target_label)
+        else:
+            target_label = importdata.get('label')
+            RHN.logInfo("using channel label %s from import" % target_label)
+        RHN.logInfo("Creating/Importing channel %s" % target_label)
+
+        if opts.parent:
+            # check parent channel
+            # 1. does it exist as a channel
+            # 2. is it a base channel
+            parentinfo = channel.getDetails(RHN, opts.parent)
+            if not parentinfo:
+                RHN.logError("Chosen parent channel %s does not exist" % opts.parent)
+                parentfail = False
+            elif parentinfo.get('parent_channel_label', '').strip() != '':
+                RHN.logError("Chosen parent channel exists but is not a base channel")
+                parentfail = True
+            else:
+                parentfail = False
+
+# ------------------ DOES OUR TARGET CHANNEL ALREADY EXIST? ------------------ #
+        # this would be a good time to check if the channel exists
+        RHN.logInfo("Fetching list of existing channels")
+        existing_channels = channel.listSoftwareChannels(RHN)
+        chanidx = index_dictlist(existing_channels, key=itemgetter('label'))
+
+        # does the target channel already exist?
+        target_channel = chanidx.get(target_label, False)
+
+        # we're in diff mode, the local channel must exist
+
+        if target_channel:
+            # the channel exists, if we aren't in test mode or
+            if not opts.update and not opts.test:
+                print "Please specify --update if you want to update target channel in place."
+            RHN.logInfo("Target channel %s already exists" % target_label)
+
+            # 3. if our target exists,
+            if opts.parent:
+                target_parent = target_channel.get('parent_label').strip()
+                if len(target_parent) > 0 and target_parent != opts.parent:
+                    RHN.logError("""Target channel %s already has parent %s, 
+which is different to the selected parent %s""" %(target_label, target_parent, opts.parent))
+                    parentfail = True
+                else:
+                    parentfail = False
+
+
+            # which errata do we already have? 
+            target_errata = channel.listErrata(RHN, target_label)
+            RHN.logInfo("Found %d errata in existing target %s" %(len(target_errata),target_label))
+            # which packages do we already have?
+            target_pkgs   = set(get_pkgstr(p) for p in channel.listAllPackages(RHN, target_label))
+            RHN.logInfo("Found %d packages in existing target %s" %(len(target_pkgs),target_label))
+
+
+        else:
+            if not opts.test:
+                print "no info for channel"
+            # empty placeholders so later comparisons work
+            target_pkgs = set()
+            target_errata = []
+
+# --------------------- Get package info from import data --------------------- #
+        print "Importing channel %s from %s" %(target_label, inputfile)
+
+        # now let's process packages from the imported data
+        pkg_missing = set()
+        pkg_matches = set()
+        # remote_pkgs = set(importdata.get('packages'))
+        remote_pkgs = set(importdata.get('allpackages'))
+        # remove any we already have in the target channel (if it exists)
+        if len(target_pkgs) > 0 :
+            RHN.logInfo("Skipping %d packages that are already present in channel %s" % 
+                (len(target_pkgs),target_label))
+            remote_pkgs.difference_update(target_pkgs)
+
+        if len(remote_pkgs) > 0:
+            pkgwidgets = [ "Packages: ", Counter(format="%5d"), Bar(), Timer()]
+            pbar = ProgressBar(widgets=pkgwidgets, maxval=len(remote_pkgs), term_width=80).start()
+
+            for counter, pkgline in enumerate(remote_pkgs):
+                # see if we have the package locally
+                pkgid = pkgindex.get(pkgline.strip(), None)
+                if pkgid is None:
+                    # we don't have a matching package, stick the ID into the "Missing" list.
+                    RHN.logDebug("Missing Package: %s" % pkgline.strip())
+                    pkg_missing.add(pkgline.strip())
+                else:
+                    # add the ID to make importing simpler
+                    pkg_matches.add(pkgid)
+
+                pbar.update(counter + 1)
+            pbar.update(counter +1)
+            print
+            print "Found %d matching packages locally" % len(pkg_matches)
+        else:
+            print "No remote packages to synchronise"
+
+        if len(pkg_missing) > 0:
+            print "The following %d packages are missing locally:" % len(pkg_missing)
+            print "\n".join(pkg_missing)
+
+# ------------------- Create channel if not in --test mode ------------------- #
+        if not opts.test:
+            # now we are going to attempt to create our channel
+            existing_channels = channel.listSoftwareChannels(RHN)
+            # to make it easy to fetch and check channel settings
+            channel_index = dict(zip((c.get('label') for c in existing_channels),existing_channels))
+
+            # did we provide a parent channel?
+            if opts.parent:
+                # if so, does it already exist?
+                parentinfo = channel_index.get(opts.parent, None)
+                if parentinfo is None:
+                    # no such channel
+                    print "Parent channel %s does not exist" % opts.parent
+                    RHN.logErr("No such parent channel: %s" % opts.parent)
+                    sys.exit(4)
+                # if it exists, is it a base channel?
+                elif parentinfo.get("parent_label").strip() != '':
+                    print "Parent channel must be a BASE channel"
+                    RHN.logErr("Chosen parent %s is not a base channel" % opts.parent)
+                    sys.exit(4)
+                else:
+                    # it exists and is a base channel, we'll use it.
+                    parentlabel = opts.parent
+            else:
+                parentlabel=''
+
+
+            # does the channel already exist?
+            # if it is, we''ll only update it if expressly asked to.
+            channelobj = channel_index.get(target_label)
+            if channelobj:
+                if not opts.update:
+                    print "Channel %s already exists. To update it in place, please specify --update" % target_label
+                    RHN.logErr("Refusing to update an exising channel without explicit instructions")
+                    sys.exit(5)
+            else:
+                cloneit = False
+                if opts.source:
+                    if channel_index.has_key(opts.source):
+                        cloneit = True
+                if cloneit:
+                    chandict = {
+                            'label': target_label,
+                            'name' : target_label,
+                            'summary': importdata.get('summary', target_label),
+                            }
+
+                    # we only need to provide this if we're creating a child channel
+                    if parentlabel != '':
+                        chandict['parent_label'] = parentlabel
+
+                    # clone the upstream channel without any errata, we'll add the ones we want next.
+                    # params: source channel, original state(no errata), dict params from above
+                    res = channel.cloneChannel(RHN, opts.source, True, **chandict)
+
+                else:
+                # let's create it
+                    if opts.parent:
+                        parentlabel = opts.parent
+                    else:
+                        parentlabel = ''
+
+                    
+                    res = channel.createChannel(RHN, 
+                            target_label,
+                            importdata.get('name', target_label),
+                            importdata.get('summary', target_label), 
+                            importdata.get('arch_name', 'channel-x86_64'),
+                            parentlabel,
+                            )
+
+                if res:
+                    RHN.logInfo("Sucessfully created channel %s" % target_label)
+                    print "successfully created channel %s" % target_label
+                else:
+                    print "Failed to create channel %s" % target_label
+                    RHN.logErr("Error creating channel %s" % target_label)
+                    sys.exit(6)
+
+            batch_size = opts.batch_size 
+
+# ----------------- Synchronise all packages from our import ----------------- #
+            # now let's do the same with the packages
+            # need better error detection here
+            channelpkgs = set(p.get('id') for p in channel.listAllPackages(RHN, target_label))
+            # don't attempt to re-add packages that are already there
+            pkg_matches.difference_update(channelpkgs)
+
+            if len(pkg_matches) > 0:
+                print "* Adding %d packages in batches of %d." %(len(pkg_matches), batch_size)
+                print "  - This could be a slow process" 
+                pkg_failures = set()
+
+                counter=0
+
+                widgets = [ "Packages: ", 
+                            Counter(format="%4d"), "/%4d " % len(pkg_matches), 
+                            Percentage(), Bar(), Timer() ]
+                pbar = ProgressBar(widgets=widgets, maxval=len(pkg_matches), term_width=80).start()
+                
+                for pkgbatch in utils.batch_iterate(pkg_matches, batch_size):
+                    # add packages one at a time so we know which ones fail
+                    pkgres = channel.addPackages(RHN, target_label, pkgbatch )
+                    RHN.logDebug("Checking that all packages were successfully added")
+                    latestpkgs = set(p.get('id') for p in channel.listAllPackages(RHN, target_label))
+                    pkgset = set(pkgbatch)
+                    pkgset.difference_update(latestpkgs)
+                    if len(pkgset) > 0:
+                        pkg_failures.update(pkgset)
+                        RHN.logError("Failed to add %d/%d packages" %(len(pkgset),len(pkgbatch)))
+                    # because this won't always be the same as batch_size
+                    counter += len(pkgbatch)
+                    RHN.logDebug("updating progressbar with %d" % counter)
+
+                    pbar.update(counter)
+            else:
+                print "* No non-errata packages to add"
+
+            print
+    except KeyboardInterrupt:
+        print "Operation cancelled by keystroke."
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main(sys.argv)
+
+
