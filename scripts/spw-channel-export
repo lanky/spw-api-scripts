@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 #
 # RHN/Spacewalk XMLRPC API script
-# requires the python-rhnapi module
+# requires the python-rhnapi and python-progressbar modules
 #
 # Copyright 2012 (c)Stuart Sears <stuart.sears@man.com>
 #
 # This file is part of spw-api-scripts
 #
-# spw-api-scripts is free software: you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free
+# spw-api-scripts is free software: you can redistribute it and/or modify it 
+# under the terms of the GNU General Public License as published by the Free
 # Software Foundation, either version 2 of the License, or (at your option)
 # any later version.
 #
@@ -21,11 +21,17 @@
 # You should have received a copy of the GNU General Public License along
 # with spw-api-scripts. If not, see http://www.gnu.org/licenses/.
 
-__doc__ = """
-spw-channel-dumppackagelist
+"""
+spw-channel-export
 
-Script to list all packages in a channel (and optionally all child channels) on
-your RHN satellite or spacewalk server. Tested and working on RHN Satellite 5.4.1
+Exports an RHN software channel as JSON, including
+1. All Errata
+2. All packages, by (E:)N-V-R.A
+3. All non-errata packages
+
+plus the usual label metadata.
+Intended to allow the recreation of a channel from one satellite on another.
+
 """
 __author__ = "Stuart Sears <stuart.sears@man.com>"
 
@@ -36,8 +42,8 @@ from optparse import OptionParser, OptionGroup
 
 # -------------------------- Custom Python Modules --------------------------- #
 import rhnapi
-from rhnapi import channel,errata,utils
-from progressbar import ProgressBar,Counter,Percentage,Bar,Timer
+from rhnapi import channel, errata, utils
+from progressbar import ProgressBar, Counter, Bar, Timer
 
 # -------------------------- RHN API Configuration --------------------------- #
 
@@ -49,7 +55,6 @@ RHNHOST = 'localhost'
 # put these in your configfile, dammit;
 RHNUSER = None
 RHNPASS = None
-
 
 # --------------------------- Script Configuration --------------------------- #
 # put global variables for the script in here
@@ -72,7 +77,7 @@ Useful for recreating channels on another box, or basic reporting"""
 
     # RHN Satellite options group
     rhngrp = OptionGroup(parser, "RHN Satellite Options", "Defaults can be set in your RHN API config file (%s)" % RHNCONFIG )
-    rhngrp.add_option("--server",help="RHN satellite server hostname [%default]", default=RHNHOST)
+    rhngrp.add_option("--server", help="RHN satellite server hostname [%default]", default=RHNHOST)
     rhngrp.add_option("--login", help="RHN login (username)" , default=RHNUSER)
     rhngrp.add_option("--pass", dest = "password", help="RHN password. This is better off in a config file.", default=RHNPASS)
     rhngrp.add_option("--config", dest = "config", help="Local RHN configuration file [ %default ]", default=RHNCONFIG)
@@ -84,7 +89,7 @@ Useful for recreating channels on another box, or basic reporting"""
 
     # script-specific options - put these in their own OptionGroup
     pkggrp = OptionGroup(parser, "Package/Channel Options")
-    pkggrp.add_option("-d", "--destdir", dest = "dir", help = "destination directory for all output files.")
+    pkggrp.add_option("-d", "--destdir", help = "destination directory for all output files.")
     pkggrp.add_option("-r", "--recursive", action="store_true", default=False,
         help="process all child channels of CHANNELLABEL. Creates one output file per channel.")
     pkggrp.add_option("-l", "--latest", action="store_true", default=False,
@@ -105,42 +110,12 @@ Useful for recreating channels on another box, or basic reporting"""
 
     # finally...
     return opts, args
-        
 # ---------------------------------------------------------------------------- #
-
-def get_pkgstr(pkgdict, newline=False):
-    """
-    returns a string in this format
-    EPOCH:NAME-VERSION-RELEASE.ARCH
-    or 
-    NAME-VERSION-RELEASE.ARCH (if no epoch present)
-    from a dict representing a package in RHN
-
-    Parameters:
-        pkgdict(dict): dict representing a package in RHN (from the RHN API
-        newline(bool): whether to append a newline (for writing to a file)
-
-    """
-    if newline:
-        pkgdict['newline'] = "\n"
-    else:
-        pkgdict['newline'] = ""
-
-    if pkgdict['epoch'].strip() != '':
-        pkgstr = "%(epoch)s:%(name)s-%(version)s-%(release)s.%(arch_label)s%(newline)s" % pkgdict
-    else:
-        pkgstr = "%(name)s-%(version)s-%(release)s.%(arch_label)s%(newline)s" % pkgdict
-
-    return pkgstr
-    
-
-
-
-# ---------------------------------------------------------------------------- #
-
-
 
 def main():    
+    """
+    Main script entry point if run directly
+    """
     opts, args = parse_cmdline(sys.argv[1:])
     if opts.debug:
         rhnloglevel = 10
@@ -188,22 +163,33 @@ def main():
             for chan in chanlist:
                 chanlabel = chan.get('label')
                 print "* processing channel %s" % chanlabel
-                if opts.dir:
+                if opts.destdir:
                     # outputfile = os.path.join(opts.dir, "%s-pkglist.txt" % chan.get('label'))
-                    outputfile = os.path.join(opts.dir, "%s-pkglist.json" % chanlabel)
+                    outputfile = os.path.join(opts.destdir, "%(label)s-export.json" % chan)
+                    if not os.path.isdir(opts.destdir):
+                        try:
+                            os.makedirs(opts.destdir)
+                        except OSError, Err:
+                            RHN.logError("%s does not exist and I cannot create it." % opts.destdir)
+                            RHN.logError(Err.strerror)
+                            sys.exit(50)
+                        except:
+                            # raise any other exceptions for recording purposes
+                            raise
                 else:
-                    outputfile = "%(label)s-pkglist.json" % chan
+                    outputfile = "%(label)s-export.json" % chan
                 RHN.logInfo("listing packages for channel %s" % chanlabel)
-                if opts.latest:
-                    packageobjs = channel.listLatestPackages(RHN, chanlabel)
-                else:                    
-                    packageobjs = channel.listAllPackages(RHN, chanlabel)
+                allpackageobjs = channel.listLatestPackages(RHN, chanlabel)
+                latestpackageobjs = channel.listAllPackages(RHN, chanlabel)
 
                 # get package E:NVR.A strings, as a set
                 print "  - Listing packages"
-                chanpkgs = set(get_pkgstr(p) for p in packageobjs)
+                chanpkgs = set(utils.get_pkgstr(p) for p in allpackageobjs)
                 chan['allpackages'] = list(chanpkgs)
-                RHN.logDebug("Got %d packages" % len(packageobjs))
+                RHN.logDebug("package count (all)- %d" % len(chanpkgs))
+                latestpkgs = set(utils.get_pkgstr(p) for p in latestpackageobjs)
+                chan['latestpkgs'] = list(latestpkgs)
+                RHN.logDebug("package count (latest only) - %d" % len(latestpkgs))
 
                 # now let's get errata-provided packages:
                 print "  - Listing errata"
@@ -218,7 +204,7 @@ def main():
                     pbar = ProgressBar(widgets=errwidgets, maxval=len(errataobjs), term_width=80).start()
 
                     for index, err in enumerate(chanerr):
-                        errpkgs = set(get_pkgstr(p) for p in errata.listPackages(RHN, err) if chanlabel in p.get('providing_channels'))
+                        errpkgs = set(utils.get_pkgstr(p) for p in errata.listPackages(RHN, err) if chanlabel in p.get('providing_channels'))
                         RHN.logDebug("Removing %d packages provided by %s from package list" %(len(errpkgs), err))
                         chanpkgs.difference_update(errpkgs)
                         # update our progressbar
@@ -234,10 +220,9 @@ def main():
                 chan['packages'] = list(chanpkgs)
 
                 if utils.dumpJSON(chan, outputfile):
-                    print "* successfully exported channel %s to %s" %(chanlabel, outputfile)
+                    print "* successfully exported channel %s to %s" % (chanlabel, outputfile)
 
         except:
-            raise
             RHN.logError("Error getting channel details - does %s actually exist?" % chanlabel)
             sys.exit(3)
         
